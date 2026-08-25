@@ -35,7 +35,7 @@ app.Use(async (context, next) =>
     try
     {
         var path = context.Request.Path.Value ?? "";
-        var publicRoute = path is "/api/auth/register" or "/api/auth/login" or "/api/auth/validate" || path.StartsWith("/api/upload/files/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase);
+        var publicRoute = path is "/api/auth/register" or "/api/auth/login" or "/api/auth/validate" or "/api/auth/refresh" || path.StartsWith("/api/upload/files/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("/swagger", StringComparison.OrdinalIgnoreCase);
         if (!publicRoute && path.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
         {
             var jwt = context.RequestServices.GetRequiredService<JwtTokenService>();

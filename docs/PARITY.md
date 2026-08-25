@@ -15,6 +15,8 @@
 
 `ApiForge.UnitTests` covers plural defaults, content search semantics, and BCrypt. `ApiForge.ApiTests` uses `WebApplicationFactory` to verify public registration, JWT-bearing response shape, and 401 envelope behavior on a protected route. The Spring Postman collection can be replayed against port 7080 after registering/logging in and setting its bearer token.
 
+The Docker Compose smoke run was also completed against a fresh PostgreSQL 16 container: register/login, refresh, content-type creation with a physical dynamic column, content create/search, permission create/check, multipart upload, and app restart persistence (user and content survived) all returned the expected contract responses.
+
 ## Deliberate host architecture difference
 
 The Spring source runs separate service processes on ports 7080-7085. The .NET port uses one ASP.NET Core process at 7080 with equivalent paths because the UI only consumes the gateway contract. This is a deployment topology change, not an API contract change. PostgreSQL is the Compose production provider; the in-memory provider remains available for isolated development and tests.
