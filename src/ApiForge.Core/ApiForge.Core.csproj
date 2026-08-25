@@ -1,0 +1,3 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><RootNamespace>ApiForge.Core</RootNamespace></PropertyGroup>
+</Project>

@@ -1,0 +1,23 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: devdb
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: devpass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/00_ddl.sql:/docker-entrypoint-initdb.d/00_ddl.sql:ro
+  app:
+    build: .
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_HTTP_PORTS: 7080
+      Storage__Provider: Postgres
+      Storage__ConnectionString: Host=db;Port=5432;Database=devdb;Username=dev;Password=devpass
+      Jwt__Secret: apiforge-headless-cms-secret-key-minimum-256-bits-required-for-hs256
+      Jwt__RefreshSecret: apiforge-headless-cms-refresh-secret-key-minimum-256-bits-required
+    ports: ["7080:7080"]
+    volumes: ["uploads:/app/uploads"]
+    depends_on: [db]
+volumes: { pgdata: {}, uploads: {} }
