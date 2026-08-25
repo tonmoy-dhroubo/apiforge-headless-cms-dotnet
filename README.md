@@ -6,7 +6,7 @@ This is the .NET port of `apiforge-headless-cms-spring`. It keeps the Spring UI-
 
 The port is a single ASP.NET Core host that replaces the Spring Cloud Gateway plus six co-located services. `ApiForge.Core` contains contracts and store abstractions, `ApiForge.Infrastructure` contains security and storage adapters, and `ApiForge.Api` contains HTTP composition. This keeps deployment simple while retaining clear domain/infrastructure boundaries; the route surface is intentionally unchanged for the existing UI.
 
-The default development provider is deterministic in-memory storage. `db/00_ddl.sql` is the PostgreSQL-compatible schema matching the source project and is mounted by Compose; `Storage:Provider=Postgres` enables the PostgreSQL content-type and dynamic-content adapters without changing the API contract. User, media, and permission metadata remain process-local in this initial port and must be moved to their corresponding PostgreSQL repositories before multi-instance production deployment.
+The default development provider is deterministic in-memory storage. `db/00_ddl.sql` and `db/01_seed_auth.sql` are the PostgreSQL-compatible schema/seed matching the source project and are mounted by Compose; `Storage:Provider=Postgres` enables PostgreSQL-backed auth/users, content types/dynamic content, permissions, and media metadata without changing the API contract.
 
 ## Run and verify
 

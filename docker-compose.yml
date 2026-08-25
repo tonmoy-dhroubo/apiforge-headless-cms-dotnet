@@ -8,6 +8,7 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/00_ddl.sql:/docker-entrypoint-initdb.d/00_ddl.sql:ro
+      - ./db/01_seed_auth.sql:/docker-entrypoint-initdb.d/01_seed_auth.sql:ro
   app:
     build: .
     environment:

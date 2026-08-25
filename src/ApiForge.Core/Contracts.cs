@@ -19,6 +19,48 @@ public sealed record ContentTypeDto(long? Id, string Name, string? PluralName, s
 public sealed record ApiPermissionDto(long? Id, string ContentTypeApiId, string Endpoint, string Method, HashSet<string>? AllowedRoles, DateTime? CreatedAt);
 public sealed record ContentPermissionDto(long? Id, string ContentTypeApiId, string Action, HashSet<string>? AllowedRoles, DateTime? CreatedAt);
 public sealed record PermissionCheck(string? ContentTypeApiId, string? Endpoint, string? Method, string? Action, IReadOnlyList<string>? UserRoles);
+public sealed class UserRecord(long id, string username, string email, string password, string? first, string? last, IEnumerable<string> roles, bool enabled)
+{
+    public long Id { get; } = id;
+    public string Username { get; } = username;
+    public string Email { get; } = email;
+    public string Password { get; } = password;
+    public string? Firstname { get; } = first;
+    public string? Lastname { get; } = last;
+    public List<string> Roles { get; } = roles.ToList();
+    public bool Enabled { get; set; } = enabled;
+}
+public sealed record MediaRecord(long Id, string Name, string? AlternativeText, string? Caption, int? Width, int? Height, string Hash, string Ext, string? Mime, double Size, string Url, string Provider, [property: JsonIgnore] string Path);
+public interface IUserStore
+{
+    Task<UserRecord?> Find(string identifier, CancellationToken ct = default);
+    Task<UserRecord?> ById(long id, CancellationToken ct = default);
+    Task<IReadOnlyList<UserRecord>> All(CancellationToken ct = default);
+    Task<UserRecord> Add(string username, string email, string password, string? first, string? last, IReadOnlyList<string> roles, CancellationToken ct = default);
+    Task<UserRecord?> SetRoles(long id, IReadOnlyList<string> roles, CancellationToken ct = default);
+    Task<bool> Remove(long id, CancellationToken ct = default);
+}
+public interface IPermissionStore
+{
+    Task<ApiPermissionDto> Add(ApiPermissionDto value, CancellationToken ct = default);
+    Task<ContentPermissionDto> Add(ContentPermissionDto value, CancellationToken ct = default);
+    Task<IReadOnlyList<ApiPermissionDto>> ApiAll(CancellationToken ct = default);
+    Task<IReadOnlyList<ContentPermissionDto>> ContentAll(CancellationToken ct = default);
+    Task<ApiPermissionDto?> ApiBy(long id, CancellationToken ct = default);
+    Task<ContentPermissionDto?> ContentBy(long id, CancellationToken ct = default);
+    Task<ApiPermissionDto?> Update(ApiPermissionDto value, CancellationToken ct = default);
+    Task<ContentPermissionDto?> Update(ContentPermissionDto value, CancellationToken ct = default);
+    Task<bool> RemoveApi(long id, CancellationToken ct = default);
+    Task<bool> RemoveContent(long id, CancellationToken ct = default);
+}
+public interface IMediaStore
+{
+    Task<MediaRecord> Save(Microsoft.AspNetCore.Http.IFormFile file, CancellationToken ct = default);
+    Task<IReadOnlyList<MediaRecord>> All(CancellationToken ct = default);
+    Task<MediaRecord?> ById(long id, CancellationToken ct = default);
+    Task<MediaRecord?> ByFile(string filename, CancellationToken ct = default);
+    Task<bool> Remove(long id, CancellationToken ct = default);
+}
 
 public interface IContentTypeStore
 {
