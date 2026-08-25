@@ -4,9 +4,17 @@ using ApiForge.Core;
 using ApiForge.Infrastructure;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddSingleton<InMemoryContentTypeStore>();
-builder.Services.AddSingleton<IContentTypeStore>(sp => sp.GetRequiredService<InMemoryContentTypeStore>());
-builder.Services.AddSingleton<IContentStore, InMemoryContentStore>();
+if (builder.Configuration["Storage:Provider"]?.Equals("Postgres", StringComparison.OrdinalIgnoreCase) == true)
+{
+    builder.Services.AddSingleton<IContentTypeStore, PostgresContentTypeStore>();
+    builder.Services.AddSingleton<IContentStore, PostgresContentStore>();
+}
+else
+{
+    builder.Services.AddSingleton<InMemoryContentTypeStore>();
+    builder.Services.AddSingleton<IContentTypeStore>(sp => sp.GetRequiredService<InMemoryContentTypeStore>());
+    builder.Services.AddSingleton<IContentStore, InMemoryContentStore>();
+}
 builder.Services.AddSingleton<InMemoryUserStore>();
 builder.Services.AddSingleton<InMemoryPermissionStore>();
 builder.Services.AddSingleton<JwtTokenService>();
