@@ -13,10 +13,10 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
     private string UploadRootDirectory => Path.Combine(environment.ContentRootPath, "uploads");
 
-    private NpgsqlConnection OpenConnection()
+    private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        await connection.OpenAsync(ct);
         return connection;
     }
 
@@ -37,7 +37,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
         try
         {
-            await using var connection = OpenConnection();
+            await using var connection = await OpenConnectionAsync(ct);
 
             const string insertSql = """
                 INSERT INTO media (name, hash, ext, mime, size, url, provider)
@@ -135,7 +135,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
     public async Task<IReadOnlyList<MediaRecord>> All(CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var sql = $"{BaseMediaSelectSql} ORDER BY id";
 
         await using var command = new NpgsqlCommand(sql, connection);
@@ -152,7 +152,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
     public async Task<MediaRecord?> ById(long id, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var sql = $"{BaseMediaSelectSql} WHERE id = @id";
 
         await using var command = new NpgsqlCommand(sql, connection);
@@ -167,7 +167,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
         var extension = Path.GetExtension(filename);
         var hash = Path.GetFileNameWithoutExtension(filename);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var sql = $"{BaseMediaSelectSql} WHERE hash = @h AND ext = @e";
 
         await using var command = new NpgsqlCommand(sql, connection);
@@ -186,7 +186,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
             return false;
         }
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         const string sql = "DELETE FROM media WHERE id = @id";
 
         await using var command = new NpgsqlCommand(sql, connection);

@@ -3,7 +3,7 @@ using ApiForge.Infrastructure;
 
 namespace ApiForge.Api.Middleware;
 
-public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger)
+public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> logger, IHostEnvironment env)
 {
     public async Task InvokeAsync(HttpContext context)
     {
@@ -34,7 +34,9 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
 
             var errorMessage = isUniqueConstraintViolation
                 ? "Resource already exists"
-                : $"Internal server error: {ex.Message}";
+                : env.IsDevelopment()
+                    ? $"Internal server error: {ex.Message}"
+                    : "An internal server error occurred.";
 
             var response = ApiResponse<object>.Fail(errorMessage);
             await context.Response.WriteAsJsonAsync(response);

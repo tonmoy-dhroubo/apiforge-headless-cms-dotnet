@@ -14,7 +14,12 @@ public class MediaController(IMediaService service) : ControllerBase
     public async Task<ActionResult<ApiResponse<MediaRecord>>> Upload([FromForm(Name = "files")] IFormFile? file, CancellationToken ct)
     {
         file ??= Request.Form.Files.GetFile("files");
-        var result = await service.UploadAsync(file!, ct);
+        if (file is null)
+        {
+            return BadRequest(ApiResponse<object>.Fail("files is required"));
+        }
+
+        var result = await service.UploadAsync(file, ct);
         return Ok(ApiResponse<MediaRecord>.Ok(result, "File uploaded successfully"));
     }
 

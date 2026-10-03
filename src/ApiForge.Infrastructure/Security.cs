@@ -9,10 +9,10 @@ namespace ApiForge.Infrastructure;
 public sealed class JwtTokenService(IConfiguration configuration)
 {
     private readonly string _secret = configuration["Jwt:Secret"] 
-        ?? "apiforge-headless-cms-secret-key-minimum-256-bits-required-for-hs256";
+        ?? throw new InvalidOperationException("Jwt:Secret configuration is required");
 
     private readonly string _refreshSecret = configuration["Jwt:RefreshSecret"] 
-        ?? "apiforge-headless-cms-refresh-secret-key-minimum-256-bits-required";
+        ?? throw new InvalidOperationException("Jwt:RefreshSecret configuration is required");
 
     private string CreateToken(long id, string username, IEnumerable<string> roles, bool isRefreshToken)
     {
@@ -92,7 +92,8 @@ public sealed class JwtTokenService(IConfiguration configuration)
             ValidateIssuerSigningKey = true,
             IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
             ValidateIssuer = false,
-            ValidateAudience = false
+            ValidateAudience = false,
+            ClockSkew = TimeSpan.Zero
         };
 
         try

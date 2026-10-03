@@ -42,12 +42,22 @@ public class AuthService(IUserStore users, JwtTokenService jwt) : IAuthService
 
     public async Task<AuthResponse> RefreshAsync(string refreshToken, CancellationToken ct = default)
     {
+        if (!jwt.Validate(refreshToken, true))
+        {
+            throw new ApiForgeException("Invalid refresh token", 401);
+        }
+
         var id = jwt.UserId(refreshToken, true);
         var user = id is null ? null : await users.ById(id.Value, ct);
 
-        if (user is null || !jwt.Validate(refreshToken, true))
+        if (user is null)
         {
             throw new ApiForgeException("Invalid refresh token", 401);
+        }
+
+        if (!user.Enabled)
+        {
+            throw new ApiForgeException("Account is disabled", 403);
         }
 
         return BuildAuthResponse(user);

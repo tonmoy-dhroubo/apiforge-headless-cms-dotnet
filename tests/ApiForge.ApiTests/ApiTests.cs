@@ -20,10 +20,11 @@ public sealed class ApiTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Register_is_public_and_returns_compatible_envelope()
     {
         // Arrange
+        var uniqueId = Guid.NewGuid().ToString("N")[..8];
         var registerPayload = new
         {
-            username = "test-user",
-            email = "test-user@example.com",
+            username = "test-user-" + uniqueId,
+            email = $"test-user-{uniqueId}@example.com",
             password = "password123",
             firstname = "Test",
             lastname = "User"

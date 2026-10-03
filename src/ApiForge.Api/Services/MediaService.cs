@@ -7,11 +7,28 @@ namespace ApiForge.Api.Services;
 
 public class MediaService(IMediaStore store) : IMediaService
 {
-    public async Task<MediaRecord> UploadAsync(IFormFile file, CancellationToken ct = default)
+    private const long MaxFileSizeInBytes = 25 * 1024 * 1024; // 25 MB
+    private static readonly HashSet<string> BlockedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".exe", ".bat", ".cmd", ".sh", ".dll", ".so", ".dylib", ".com", ".msi", ".vbs", ".ps1", ".jar"
+    };
+
+    public async Task<MediaRecord> UploadAsync(IFormFile? file, CancellationToken ct = default)
     {
         if (file is null || file.Length == 0)
         {
             throw new ApiForgeException("files is required", 400);
+        }
+
+        if (file.Length > MaxFileSizeInBytes)
+        {
+            throw new ApiForgeException($"File size exceeds the maximum allowed limit of {MaxFileSizeInBytes / (1024 * 1024)} MB", 400);
+        }
+
+        var extension = Path.GetExtension(file.FileName);
+        if (!string.IsNullOrEmpty(extension) && BlockedExtensions.Contains(extension))
+        {
+            throw new ApiForgeException($"Files with extension '{extension}' are not allowed", 400);
         }
 
         return await store.Save(file, ct);

@@ -43,7 +43,9 @@ builder.Services.AddScoped<IMediaService, MediaService>();
 builder.Services.AddScoped<IPermissionService, PermissionService>();
 
 // Authentication & JWT Bearer Configuration
-var jwtSecret = builder.Configuration["Jwt:Secret"] ?? "apiforge-headless-cms-secret-key-minimum-256-bits-required-for-hs256";
+var jwtSecret = builder.Configuration["Jwt:Secret"] 
+    ?? throw new InvalidOperationException("Jwt:Secret configuration is required");
+
 builder.Services.AddAuthentication(options =>
 {
     options.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
@@ -51,7 +53,7 @@ builder.Services.AddAuthentication(options =>
 })
 .AddJwtBearer(options =>
 {
-    options.RequireHttpsMetadata = false;
+    options.RequireHttpsMetadata = !builder.Environment.IsDevelopment();
     options.SaveToken = true;
     options.TokenValidationParameters = new TokenValidationParameters
     {
@@ -85,13 +87,28 @@ builder.Services.AddControllers()
     });
 
 // CORS
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
+    options.AddPolicy("AllowConfigured", policy =>
     {
-        policy.AllowAnyOrigin()
-              .AllowAnyMethod()
-              .AllowAnyHeader();
+        if (allowedOrigins.Length > 0)
+        {
+            policy.WithOrigins(allowedOrigins)
+                  .AllowAnyMethod()
+                  .AllowAnyHeader()
+                  .AllowCredentials();
+        }
+        else if (builder.Environment.IsDevelopment())
+        {
+            policy.AllowAnyOrigin()
+                  .AllowAnyMethod()
+                  .AllowAnyHeader();
+        }
+        else
+        {
+            policy.SetIsOriginAllowed(_ => false);
+        }
     });
 });
 
@@ -105,7 +122,7 @@ var app = builder.Build();
 app.UseMiddleware<ExceptionHandlingMiddleware>();
 
 // CORS & Swagger
-app.UseCors("AllowAll");
+app.UseCors("AllowConfigured");
 app.UseSwagger();
 app.UseSwaggerUI();
 

@@ -67,7 +67,7 @@ public class AuthController(IAuthService authService, IUserService userService) 
     }
 
     [HttpPut("users/{id:long}/roles")]
-    [Authorize]
+    [Authorize(Roles = "SUPER_ADMIN,ADMIN")]
     public async Task<ActionResult<ApiResponse<UserDto>>> AssignRoles(long id, [FromBody] JsonElement body, CancellationToken ct)
     {
         if (!body.TryGetProperty("roles", out var rolesElement))
@@ -85,7 +85,7 @@ public class AuthController(IAuthService authService, IUserService userService) 
     }
 
     [HttpDelete("users/{id:long}")]
-    [Authorize]
+    [Authorize(Roles = "SUPER_ADMIN,ADMIN")]
     public async Task<ActionResult<ApiResponse<object?>>> DeleteUser(long id, CancellationToken ct)
     {
         await userService.DeleteAsync(id, ct);

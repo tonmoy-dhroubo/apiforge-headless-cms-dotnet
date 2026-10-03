@@ -9,10 +9,10 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
     private readonly string _connectionString = configuration["Storage:ConnectionString"] 
         ?? throw new InvalidOperationException("Storage:ConnectionString is required");
 
-    private NpgsqlConnection OpenConnection()
+    private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        await connection.OpenAsync(ct);
         return connection;
     }
 
@@ -55,7 +55,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
 
     public async Task<UserRecord?> Find(string identifier, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         var sql = $"""
             {BaseUserSelectSql}
@@ -72,7 +72,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
 
     public async Task<UserRecord?> ById(long id, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         var sql = $"""
             {BaseUserSelectSql}
@@ -89,7 +89,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
 
     public async Task<IReadOnlyList<UserRecord>> All(CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         var sql = $"""
             {BaseUserSelectSql}
@@ -118,7 +118,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
         IReadOnlyList<string> roles,
         CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string insertUserSql = """
@@ -178,7 +178,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
 
     public async Task<UserRecord?> SetRoles(long id, IReadOnlyList<string> roles, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         if (await ById(id, ct) is null)
@@ -194,7 +194,7 @@ public sealed class PostgresUserStore(IConfiguration configuration) : IUserStore
 
     public async Task<bool> Remove(long id, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         const string sql = "DELETE FROM users WHERE id = @id";
 
         await using var command = new NpgsqlCommand(sql, connection);
@@ -210,16 +210,16 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
     private readonly string _connectionString = configuration["Storage:ConnectionString"] 
         ?? throw new InvalidOperationException("Storage:ConnectionString is required");
 
-    private NpgsqlConnection OpenConnection()
+    private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        await connection.OpenAsync(ct);
         return connection;
     }
 
     public async Task<ApiPermissionDto> Add(ApiPermissionDto dto, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string insertSql = """
@@ -248,7 +248,7 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
 
     public async Task<ContentPermissionDto> Add(ContentPermissionDto dto, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string insertSql = """
@@ -282,9 +282,16 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
         IEnumerable<string> roles,
         CancellationToken ct)
     {
+        var safeTable = tableName switch
+        {
+            "api_permission_roles" => "api_permission_roles",
+            "content_permission_roles" => "content_permission_roles",
+            _ => throw new ArgumentException("Invalid permission table name", nameof(tableName))
+        };
+
+        var sql = $"INSERT INTO {safeTable} (permission_id, role_name) VALUES (@id, @r) ON CONFLICT DO NOTHING";
         foreach (var role in roles)
         {
-            var sql = $"INSERT INTO {tableName} (permission_id, role_name) VALUES (@id, @r) ON CONFLICT DO NOTHING";
             await using var command = new NpgsqlCommand(sql, connection, transaction);
             command.Parameters.AddWithValue("id", permissionId);
             command.Parameters.AddWithValue("r", role);
@@ -295,7 +302,7 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
 
     public async Task<IReadOnlyList<ApiPermissionDto>> ApiAll(CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         const string sql = """
             SELECT p.id,
@@ -338,7 +345,7 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
 
     public async Task<IReadOnlyList<ContentPermissionDto>> ContentAll(CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         const string sql = """
             SELECT p.id,
@@ -376,11 +383,88 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
         return permissions;
     }
 
-    public async Task<ApiPermissionDto?> ApiBy(long id, CancellationToken ct = default) =>
-        (await ApiAll(ct)).FirstOrDefault(x => x.Id == id);
+    public async Task<ApiPermissionDto?> ApiBy(long id, CancellationToken ct = default)
+    {
+        await using var connection = await OpenConnectionAsync(ct);
 
-    public async Task<ContentPermissionDto?> ContentBy(long id, CancellationToken ct = default) =>
-        (await ContentAll(ct)).FirstOrDefault(x => x.Id == id);
+        const string sql = """
+            SELECT p.id,
+                   p.content_type_api_id,
+                   p.endpoint,
+                   p.method,
+                   p.created_at,
+                   COALESCE(array_agg(r.role_name) FILTER (WHERE r.role_name IS NOT NULL), ARRAY[]::text[]) AS allowed_roles
+            FROM api_permissions p
+            LEFT JOIN api_permission_roles r ON r.permission_id = p.id
+            WHERE p.id = @id
+            GROUP BY p.id
+            """;
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        if (await reader.ReadAsync(ct))
+        {
+            var permId = reader.GetInt64(0);
+            var contentTypeApiId = reader.GetString(1);
+            var endpoint = reader.GetString(2);
+            var method = reader.GetString(3);
+            var createdAt = reader.GetDateTime(4);
+            var roleArray = (string[])reader.GetValue(5);
+
+            return new ApiPermissionDto(
+                Id: permId,
+                ContentTypeApiId: contentTypeApiId,
+                Endpoint: endpoint,
+                Method: method,
+                AllowedRoles: new HashSet<string>(roleArray),
+                CreatedAt: createdAt
+            );
+        }
+
+        return null;
+    }
+
+    public async Task<ContentPermissionDto?> ContentBy(long id, CancellationToken ct = default)
+    {
+        await using var connection = await OpenConnectionAsync(ct);
+
+        const string sql = """
+            SELECT p.id,
+                   p.content_type_api_id,
+                   p.action,
+                   p.created_at,
+                   COALESCE(array_agg(r.role_name) FILTER (WHERE r.role_name IS NOT NULL), ARRAY[]::text[]) AS allowed_roles
+            FROM content_permissions p
+            LEFT JOIN content_permission_roles r ON r.permission_id = p.id
+            WHERE p.id = @id
+            GROUP BY p.id
+            """;
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        if (await reader.ReadAsync(ct))
+        {
+            var permId = reader.GetInt64(0);
+            var contentTypeApiId = reader.GetString(1);
+            var action = reader.GetString(2);
+            var createdAt = reader.GetDateTime(3);
+            var roleArray = (string[])reader.GetValue(4);
+
+            return new ContentPermissionDto(
+                Id: permId,
+                ContentTypeApiId: contentTypeApiId,
+                Action: action,
+                AllowedRoles: new HashSet<string>(roleArray),
+                CreatedAt: createdAt
+            );
+        }
+
+        return null;
+    }
 
     public async Task<ApiPermissionDto?> Update(ApiPermissionDto dto, CancellationToken ct = default)
     {
@@ -389,7 +473,8 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
             return null;
         }
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string updateSql = """
             UPDATE api_permissions
@@ -399,7 +484,7 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
             WHERE id = @id
             """;
 
-        await using var command = new NpgsqlCommand(updateSql, connection);
+        await using var command = new NpgsqlCommand(updateSql, connection, transaction);
         command.Parameters.AddWithValue("c", dto.ContentTypeApiId);
         command.Parameters.AddWithValue("e", dto.Endpoint);
         command.Parameters.AddWithValue("m", dto.Method);
@@ -407,18 +492,20 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
         await command.ExecuteNonQueryAsync(ct);
 
         const string deleteRolesSql = "DELETE FROM api_permission_roles WHERE permission_id = @id";
-        await using var deleteRolesCommand = new NpgsqlCommand(deleteRolesSql, connection);
+        await using var deleteRolesCommand = new NpgsqlCommand(deleteRolesSql, connection, transaction);
         deleteRolesCommand.Parameters.AddWithValue("id", dto.Id.Value);
         await deleteRolesCommand.ExecuteNonQueryAsync(ct);
 
         foreach (var role in dto.AllowedRoles ?? [])
         {
             const string insertRoleSql = "INSERT INTO api_permission_roles (permission_id, role_name) VALUES (@id, @r)";
-            await using var insertRoleCommand = new NpgsqlCommand(insertRoleSql, connection);
+            await using var insertRoleCommand = new NpgsqlCommand(insertRoleSql, connection, transaction);
             insertRoleCommand.Parameters.AddWithValue("id", dto.Id.Value);
             insertRoleCommand.Parameters.AddWithValue("r", role);
             await insertRoleCommand.ExecuteNonQueryAsync(ct);
         }
+
+        await transaction.CommitAsync(ct);
 
         return await ApiBy(dto.Id.Value, ct);
     }
@@ -430,7 +517,8 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
             return null;
         }
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string updateSql = """
             UPDATE content_permissions
@@ -439,32 +527,34 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
             WHERE id = @id
             """;
 
-        await using var command = new NpgsqlCommand(updateSql, connection);
+        await using var command = new NpgsqlCommand(updateSql, connection, transaction);
         command.Parameters.AddWithValue("c", dto.ContentTypeApiId);
         command.Parameters.AddWithValue("a", dto.Action);
         command.Parameters.AddWithValue("id", dto.Id.Value);
         await command.ExecuteNonQueryAsync(ct);
 
         const string deleteRolesSql = "DELETE FROM content_permission_roles WHERE permission_id = @id";
-        await using var deleteRolesCommand = new NpgsqlCommand(deleteRolesSql, connection);
+        await using var deleteRolesCommand = new NpgsqlCommand(deleteRolesSql, connection, transaction);
         deleteRolesCommand.Parameters.AddWithValue("id", dto.Id.Value);
         await deleteRolesCommand.ExecuteNonQueryAsync(ct);
 
         foreach (var role in dto.AllowedRoles ?? [])
         {
             const string insertRoleSql = "INSERT INTO content_permission_roles (permission_id, role_name) VALUES (@id, @r)";
-            await using var insertRoleCommand = new NpgsqlCommand(insertRoleSql, connection);
+            await using var insertRoleCommand = new NpgsqlCommand(insertRoleSql, connection, transaction);
             insertRoleCommand.Parameters.AddWithValue("id", dto.Id.Value);
             insertRoleCommand.Parameters.AddWithValue("r", role);
             await insertRoleCommand.ExecuteNonQueryAsync(ct);
         }
+
+        await transaction.CommitAsync(ct);
 
         return await ContentBy(dto.Id.Value, ct);
     }
 
     public async Task<bool> RemoveApi(long id, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         const string sql = "DELETE FROM api_permissions WHERE id = @id";
 
         await using var command = new NpgsqlCommand(sql, connection);
@@ -476,7 +566,7 @@ public sealed class PostgresPermissionStore(IConfiguration configuration) : IPer
 
     public async Task<bool> RemoveContent(long id, CancellationToken ct = default)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         const string sql = "DELETE FROM content_permissions WHERE id = @id";
 
         await using var command = new NpgsqlCommand(sql, connection);

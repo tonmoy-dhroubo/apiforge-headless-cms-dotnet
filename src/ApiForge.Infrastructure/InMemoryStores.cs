@@ -3,15 +3,11 @@ using ApiForge.Core;
 
 namespace ApiForge.Infrastructure;
 
-public sealed class ApiForgeException(string message, int status) : Exception(message)
-{
-    public int Status { get; } = status;
-}
-
 public sealed class InMemoryContentTypeStore : IContentTypeStore
 {
     private readonly ConcurrentDictionary<long, ContentTypeDto> _types = new();
     private long _nextId;
+    private long _nextFieldId;
 
     public Task<IReadOnlyList<ContentTypeDto>> All(CancellationToken ct)
     {
@@ -45,7 +41,7 @@ public sealed class InMemoryContentTypeStore : IContentTypeStore
 
         var now = DateTime.UtcNow;
         var fields = (dto.Fields ?? [])
-            .Select(f => f with { Id = f.Id ?? Random.Shared.NextInt64(1, long.MaxValue) })
+            .Select(f => f with { Id = f.Id ?? Interlocked.Increment(ref _nextFieldId) })
             .ToList();
 
         var id = Interlocked.Increment(ref _nextId);
@@ -169,19 +165,22 @@ public sealed class InMemoryContentStore(IContentTypeStore types) : IContentStor
 
     public async Task<IDictionary<string, object?>?> Update(string apiId, long id, IDictionary<string, object?> values, CancellationToken ct)
     {
-        var row = await ById(apiId, id, ct);
-        if (row is null)
+        await EnsureContentTypeExists(apiId, ct);
+
+        if (!_rows.TryGetValue(apiId, out var table) || !table.TryGetValue(id, out var existing))
         {
             return null;
         }
 
+        var updated = new Dictionary<string, object?>(existing, StringComparer.OrdinalIgnoreCase);
         foreach (var (key, value) in values)
         {
-            row[key] = value;
+            updated[key] = value;
         }
 
-        row["updated_at"] = DateTime.UtcNow;
-        return row;
+        updated["updated_at"] = DateTime.UtcNow;
+        table[id] = updated;
+        return updated;
     }
 
     public async Task Delete(string apiId, long id, CancellationToken ct)
@@ -286,11 +285,12 @@ public sealed class InMemoryPermissionStore : IPermissionStore
 {
     private readonly ConcurrentDictionary<long, ApiPermissionDto> _apiPermissions = new();
     private readonly ConcurrentDictionary<long, ContentPermissionDto> _contentPermissions = new();
-    private long _nextId;
+    private long _nextApiId;
+    private long _nextContentId;
 
     public Task<ApiPermissionDto> Add(ApiPermissionDto dto, CancellationToken ct = default)
     {
-        var id = Interlocked.Increment(ref _nextId);
+        var id = Interlocked.Increment(ref _nextApiId);
         var created = dto with
         {
             Id = id,
@@ -303,7 +303,7 @@ public sealed class InMemoryPermissionStore : IPermissionStore
 
     public Task<ContentPermissionDto> Add(ContentPermissionDto dto, CancellationToken ct = default)
     {
-        var id = Interlocked.Increment(ref _nextId);
+        var id = Interlocked.Increment(ref _nextContentId);
         var created = dto with
         {
             Id = id,

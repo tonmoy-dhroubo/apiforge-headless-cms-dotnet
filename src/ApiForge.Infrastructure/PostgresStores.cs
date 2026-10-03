@@ -9,10 +9,10 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
     private readonly string _connectionString = configuration["Storage:ConnectionString"] 
         ?? throw new InvalidOperationException("Storage:ConnectionString is required");
 
-    private NpgsqlConnection OpenConnection()
+    private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        await connection.OpenAsync(ct);
         return connection;
     }
 
@@ -26,65 +26,43 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
         return value;
     }
 
-    private static async Task<ContentTypeDto> ReadContentType(string connectionString, NpgsqlDataReader reader, CancellationToken ct)
+    private static FieldDto ReadField(NpgsqlDataReader reader) =>
+        new(
+            Id: reader.GetInt64(0),
+            Name: reader.GetString(1),
+            FieldName: reader.GetString(2),
+            Type: Enum.Parse<FieldType>(reader.GetString(3)),
+            Required: reader.IsDBNull(4) ? null : reader.GetBoolean(4),
+            Unique: reader.IsDBNull(5) ? null : reader.GetBoolean(5),
+            TargetContentType: reader.IsDBNull(6) ? null : reader.GetString(6),
+            RelationType: reader.IsDBNull(7) ? null : reader.GetString(7)
+        );
+
+    private static async Task<List<FieldDto>> LoadFieldsForTypeAsync(NpgsqlConnection connection, long contentTypeId, CancellationToken ct)
     {
-        var id = reader.GetInt64(0);
-        var name = reader.GetString(1);
-        var pluralName = reader.GetString(2);
-        var apiId = reader.GetString(3);
-        var description = reader.IsDBNull(4) ? null : reader.GetString(4);
-        var createdAt = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5);
-        var updatedAt = reader.IsDBNull(6) ? (DateTime?)null : reader.GetDateTime(6);
+        const string fieldsSql = """
+            SELECT id, name, field_name, type, required, "unique", target_content_type, relation_type
+            FROM fields
+            WHERE content_type_id = @id
+            ORDER BY id
+            """;
 
+        await using var fieldsCommand = new NpgsqlCommand(fieldsSql, connection);
+        fieldsCommand.Parameters.AddWithValue("id", contentTypeId);
+
+        await using var fieldsReader = await fieldsCommand.ExecuteReaderAsync(ct);
         var fields = new List<FieldDto>();
-
-        await using (var fieldsConnection = new NpgsqlConnection(connectionString))
+        while (await fieldsReader.ReadAsync(ct))
         {
-            await fieldsConnection.OpenAsync(ct);
-
-            const string fieldsSql = """
-                SELECT id, name, field_name, type, required, "unique", target_content_type, relation_type
-                FROM fields
-                WHERE content_type_id = @id
-                ORDER BY id
-                """;
-
-            await using var fieldsCommand = new NpgsqlCommand(fieldsSql, fieldsConnection);
-            fieldsCommand.Parameters.AddWithValue("id", id);
-
-            await using var fieldsReader = await fieldsCommand.ExecuteReaderAsync(ct);
-            while (await fieldsReader.ReadAsync(ct))
-            {
-                var fieldDto = new FieldDto(
-                    Id: fieldsReader.GetInt64(0),
-                    Name: fieldsReader.GetString(1),
-                    FieldName: fieldsReader.GetString(2),
-                    Type: Enum.Parse<FieldType>(fieldsReader.GetString(3)),
-                    Required: fieldsReader.IsDBNull(4) ? null : fieldsReader.GetBoolean(4),
-                    Unique: fieldsReader.IsDBNull(5) ? null : fieldsReader.GetBoolean(5),
-                    TargetContentType: fieldsReader.IsDBNull(6) ? null : fieldsReader.GetString(6),
-                    RelationType: fieldsReader.IsDBNull(7) ? null : fieldsReader.GetString(7)
-                );
-
-                fields.Add(fieldDto);
-            }
+            fields.Add(ReadField(fieldsReader));
         }
 
-        return new ContentTypeDto(
-            Id: id,
-            Name: name,
-            PluralName: pluralName,
-            ApiId: apiId,
-            Description: description,
-            Fields: fields,
-            CreatedAt: createdAt,
-            UpdatedAt: updatedAt
-        );
+        return fields;
     }
 
     public async Task<IReadOnlyList<ContentTypeDto>> All(CancellationToken ct)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         const string sql = """
             SELECT id, name, plural_name, api_id, description, created_at, updated_at
@@ -92,31 +70,109 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
             ORDER BY id
             """;
 
-        await using var command = new NpgsqlCommand(sql, connection);
-        await using var reader = await command.ExecuteReaderAsync(ct);
+        var types = new List<(long Id, string Name, string PluralName, string ApiId, string? Description, DateTime? CreatedAt, DateTime? UpdatedAt)>();
 
-        var result = new List<ContentTypeDto>();
-        while (await reader.ReadAsync(ct))
+        await using (var command = new NpgsqlCommand(sql, connection))
+        await using (var reader = await command.ExecuteReaderAsync(ct))
         {
-            result.Add(await ReadContentType(_connectionString, reader, ct));
+            while (await reader.ReadAsync(ct))
+            {
+                types.Add((
+                    reader.GetInt64(0),
+                    reader.GetString(1),
+                    reader.GetString(2),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.IsDBNull(5) ? null : reader.GetDateTime(5),
+                    reader.IsDBNull(6) ? null : reader.GetDateTime(6)
+                ));
+            }
         }
 
-        return result;
+        if (types.Count == 0)
+        {
+            return [];
+        }
+
+        const string allFieldsSql = """
+            SELECT id, name, field_name, type, required, "unique", target_content_type, relation_type, content_type_id
+            FROM fields
+            ORDER BY id
+            """;
+
+        var fieldsByType = new Dictionary<long, List<FieldDto>>();
+        await using (var fieldsCommand = new NpgsqlCommand(allFieldsSql, connection))
+        await using (var fieldsReader = await fieldsCommand.ExecuteReaderAsync(ct))
+        {
+            while (await fieldsReader.ReadAsync(ct))
+            {
+                var fieldDto = ReadField(fieldsReader);
+                var typeId = fieldsReader.GetInt64(8);
+                if (!fieldsByType.TryGetValue(typeId, out var fieldList))
+                {
+                    fieldList = [];
+                    fieldsByType[typeId] = fieldList;
+                }
+                fieldList.Add(fieldDto);
+            }
+        }
+
+        return types.Select(t => new ContentTypeDto(
+            Id: t.Id,
+            Name: t.Name,
+            PluralName: t.PluralName,
+            ApiId: t.ApiId,
+            Description: t.Description,
+            Fields: fieldsByType.TryGetValue(t.Id, out var fList) ? fList : [],
+            CreatedAt: t.CreatedAt,
+            UpdatedAt: t.UpdatedAt
+        )).ToList();
     }
 
     private async Task<ContentTypeDto?> FindOne(string sql, object value, CancellationToken ct)
     {
-        await using var connection = OpenConnection();
-        await using var command = new NpgsqlCommand(sql, connection);
-        command.Parameters.AddWithValue("v", value);
+        await using var connection = await OpenConnectionAsync(ct);
+        long? id = null;
+        string? name = null;
+        string? pluralName = null;
+        string? apiId = null;
+        string? description = null;
+        DateTime? createdAt = null;
+        DateTime? updatedAt = null;
 
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        if (await reader.ReadAsync(ct))
+        await using (var command = new NpgsqlCommand(sql, connection))
         {
-            return await ReadContentType(_connectionString, reader, ct);
+            command.Parameters.AddWithValue("v", value);
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (await reader.ReadAsync(ct))
+            {
+                id = reader.GetInt64(0);
+                name = reader.GetString(1);
+                pluralName = reader.GetString(2);
+                apiId = reader.GetString(3);
+                description = reader.IsDBNull(4) ? null : reader.GetString(4);
+                createdAt = reader.IsDBNull(5) ? null : reader.GetDateTime(5);
+                updatedAt = reader.IsDBNull(6) ? null : reader.GetDateTime(6);
+            }
         }
 
-        return null;
+        if (id is null)
+        {
+            return null;
+        }
+
+        var fields = await LoadFieldsForTypeAsync(connection, id.Value, ct);
+
+        return new ContentTypeDto(
+            Id: id,
+            Name: name!,
+            PluralName: pluralName!,
+            ApiId: apiId!,
+            Description: description,
+            Fields: fields,
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt
+        );
     }
 
     public Task<ContentTypeDto?> ById(long id, CancellationToken ct)
@@ -163,7 +219,7 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
 
     public async Task<ContentTypeDto> Create(ContentTypeDto dto, CancellationToken ct)
     {
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         const string insertTypeSql = """
@@ -243,7 +299,7 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
         var existing = await ById(id, ct) 
             ?? throw new ApiForgeException("Content type not found", 404);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
 
         const string updateSql = """
             UPDATE content_types
@@ -270,7 +326,7 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
         var existing = await ById(id, ct) 
             ?? throw new ApiForgeException("Content type not found", 404);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
 
         var safeApiId = SanitizeIdentifier(existing.ApiId);
@@ -286,12 +342,13 @@ public sealed class PostgresContentTypeStore(IConfiguration configuration) : ICo
 
 public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration configuration) : IContentStore
 {
-    private readonly string _connectionString = configuration["Storage:ConnectionString"]!;
+    private readonly string _connectionString = configuration["Storage:ConnectionString"]
+        ?? throw new InvalidOperationException("Storage:ConnectionString is required");
 
-    private NpgsqlConnection OpenConnection()
+    private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
         var connection = new NpgsqlConnection(_connectionString);
-        connection.Open();
+        await connection.OpenAsync(ct);
         return connection;
     }
 
@@ -331,7 +388,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
     {
         await EnsureContentTypeExists(apiId, ct);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var keys = values.Keys.Select(SanitizeIdentifier).ToList();
 
         var columnsClause = string.Join(", ", keys);
@@ -356,7 +413,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
     {
         await EnsureContentTypeExists(apiId, ct);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var safeTableName = SanitizeIdentifier(apiId);
         var sql = $"SELECT * FROM ct_{safeTableName} ORDER BY id";
 
@@ -376,7 +433,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
     {
         await EnsureContentTypeExists(apiId, ct);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var keys = filters.Keys.Select(SanitizeIdentifier).ToList();
 
         var whereClause = keys.Count == 0 
@@ -409,7 +466,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
     {
         await EnsureContentTypeExists(apiId, ct);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var safeTableName = SanitizeIdentifier(apiId);
         var sql = $"SELECT * FROM ct_{safeTableName} WHERE id = @id";
 
@@ -424,7 +481,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
     {
         await EnsureContentTypeExists(apiId, ct);
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var keys = values.Keys.Select(SanitizeIdentifier).ToList();
 
         var setClause = string.Join(", ", keys.Select((key, i) => $"{key} = @p{i}"));
@@ -453,7 +510,7 @@ public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration
             throw new ApiForgeException("Content not found", 404);
         }
 
-        await using var connection = OpenConnection();
+        await using var connection = await OpenConnectionAsync(ct);
         var safeTableName = SanitizeIdentifier(apiId);
         var sql = $"DELETE FROM ct_{safeTableName} WHERE id = @id";
 
