@@ -9,11 +9,3 @@ public interface IAuthService
     bool ValidateToken(string? token);
     Task<AuthResponse> RefreshAsync(string refreshToken, CancellationToken ct = default);
 }
-
-public interface IUserService
-{
-    Task<IReadOnlyList<UserDto>> GetAllAsync(CancellationToken ct = default);
-    Task<UserDto> GetByIdAsync(long id, CancellationToken ct = default);
-    Task<UserDto> AssignRolesAsync(long id, IReadOnlyList<string> roles, CancellationToken ct = default);
-    Task DeleteAsync(long id, CancellationToken ct = default);
-}

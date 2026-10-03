@@ -1,20 +1,96 @@
 using System.Collections.Concurrent;
+using ApiForge.Core;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
-using ApiForge.Core;
 
 namespace ApiForge.Infrastructure;
 
 public sealed class MediaStore(IWebHostEnvironment environment) : IMediaStore
 {
-    private readonly ConcurrentDictionary<long, MediaRecord> _items = new(); private long _next;
-    private string Root => Path.Combine(environment.ContentRootPath, "uploads");
+    private readonly ConcurrentDictionary<long, MediaRecord> _items = new();
+    private long _nextId;
+
+    private string UploadRootDirectory => Path.Combine(environment.ContentRootPath, "uploads");
+
     public async Task<MediaRecord> Save(IFormFile file, CancellationToken ct = default)
     {
-        Directory.CreateDirectory(Root); var original = Path.GetFileName(file.FileName); var ext = Path.GetExtension(original); var hash = Guid.NewGuid().ToString(); var stored = hash + ext; var path = Path.Combine(Root, stored);
-        await using (var output = File.Create(path)) await file.CopyToAsync(output, ct);
-        var item = new MediaRecord(Interlocked.Increment(ref _next), original, null, null, null, null, hash, ext, file.ContentType, file.Length / 1024d, "/api/upload/files/" + stored, "local", path); _items[item.Id] = item; return item;
+        Directory.CreateDirectory(UploadRootDirectory);
+
+        var originalFileName = Path.GetFileName(file.FileName);
+        var extension = Path.GetExtension(originalFileName);
+        var hash = Guid.NewGuid().ToString();
+        var storedFileName = hash + extension;
+        var physicalPath = Path.Combine(UploadRootDirectory, storedFileName);
+
+        await using (var outputStream = File.Create(physicalPath))
+        {
+            await file.CopyToAsync(outputStream, ct);
+        }
+
+        var id = Interlocked.Increment(ref _nextId);
+        var sizeInKb = file.Length / 1024d;
+        var publicUrl = "/api/upload/files/" + storedFileName;
+
+        var record = new MediaRecord(
+            Id: id,
+            Name: originalFileName,
+            AlternativeText: null,
+            Caption: null,
+            Width: null,
+            Height: null,
+            Hash: hash,
+            Ext: extension,
+            Mime: file.ContentType,
+            Size: sizeInKb,
+            Url: publicUrl,
+            Provider: "local",
+            Path: physicalPath
+        );
+
+        _items[record.Id] = record;
+        return record;
     }
-    public Task<IReadOnlyList<MediaRecord>> All(CancellationToken ct = default) => Task.FromResult<IReadOnlyList<MediaRecord>>(_items.Values.OrderBy(x => x.Id).ToList()); public Task<MediaRecord?> ById(long id, CancellationToken ct = default) => Task.FromResult(_items.GetValueOrDefault(id)); public Task<MediaRecord?> ByFile(string file, CancellationToken ct = default) => Task.FromResult(_items.Values.FirstOrDefault(x => x.Hash + x.Ext == file));
-    public Task<bool> Remove(long id, CancellationToken ct = default) { if (!_items.TryRemove(id, out var x)) return Task.FromResult(false); try { File.Delete(x.Path); } catch { } return Task.FromResult(true); }
+
+    public Task<IReadOnlyList<MediaRecord>> All(CancellationToken ct = default)
+    {
+        var records = _items.Values
+            .OrderBy(item => item.Id)
+            .ToList();
+
+        return Task.FromResult<IReadOnlyList<MediaRecord>>(records);
+    }
+
+    public Task<MediaRecord?> ById(long id, CancellationToken ct = default)
+    {
+        _items.TryGetValue(id, out var record);
+        return Task.FromResult(record);
+    }
+
+    public Task<MediaRecord?> ByFile(string filename, CancellationToken ct = default)
+    {
+        var record = _items.Values.FirstOrDefault(item => (item.Hash + item.Ext) == filename);
+        return Task.FromResult(record);
+    }
+
+    public Task<bool> Remove(long id, CancellationToken ct = default)
+    {
+        if (!_items.TryRemove(id, out var record))
+        {
+            return Task.FromResult(false);
+        }
+
+        try
+        {
+            if (File.Exists(record.Path))
+            {
+                File.Delete(record.Path);
+            }
+        }
+        catch
+        {
+            // Suppress file deletion errors if file is locked or missing
+        }
+
+        return Task.FromResult(true);
+    }
 }

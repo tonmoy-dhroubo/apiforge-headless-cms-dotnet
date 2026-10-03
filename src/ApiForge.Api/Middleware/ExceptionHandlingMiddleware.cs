@@ -15,16 +15,29 @@ public class ExceptionHandlingMiddleware(RequestDelegate next, ILogger<Exception
         {
             context.Response.StatusCode = ex.Status;
             context.Response.ContentType = "application/json";
-            await context.Response.WriteAsJsonAsync(ApiResponse<object>.Fail(ex.Message));
+
+            var response = ApiResponse<object>.Fail(ex.Message);
+            await context.Response.WriteAsJsonAsync(response);
         }
         catch (Exception ex)
         {
-            logger.LogError(ex, "Unhandled exception occurred");
-            var state = ex.GetType().GetProperty("SqlState")?.GetValue(ex)?.ToString();
-            context.Response.StatusCode = state == "23505" ? 409 : 500;
+            logger.LogError(ex, "Unhandled exception occurred during request execution");
+
+            var sqlState = ex.GetType().GetProperty("SqlState")?.GetValue(ex)?.ToString();
+            var isUniqueConstraintViolation = sqlState == "23505";
+
+            context.Response.StatusCode = isUniqueConstraintViolation 
+                ? StatusCodes.Status409Conflict 
+                : StatusCodes.Status500InternalServerError;
+
             context.Response.ContentType = "application/json";
-            var message = state == "23505" ? "Resource already exists" : $"Internal server error: {ex.Message}";
-            await context.Response.WriteAsJsonAsync(ApiResponse<object>.Fail(message));
+
+            var errorMessage = isUniqueConstraintViolation
+                ? "Resource already exists"
+                : $"Internal server error: {ex.Message}";
+
+            var response = ApiResponse<object>.Fail(errorMessage);
+            await context.Response.WriteAsJsonAsync(response);
         }
     }
 }

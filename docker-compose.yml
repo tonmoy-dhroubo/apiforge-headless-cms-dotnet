@@ -14,6 +14,7 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
   app:
     build: .
     environment:
@@ -23,9 +24,14 @@ services:
       Storage__ConnectionString: Host=db;Port=5432;Database=devdb;Username=dev;Password=devpass
       Jwt__Secret: apiforge-headless-cms-secret-key-minimum-256-bits-required-for-hs256
       Jwt__RefreshSecret: apiforge-headless-cms-refresh-secret-key-minimum-256-bits-required
-    ports: ["7080:7080"]
-    volumes: ["uploads:/app/uploads"]
+    ports:
+      - "7080:7080"
+    volumes:
+      - uploads:/app/uploads
     depends_on:
       db:
         condition: service_healthy
-volumes: { pgdata: {}, uploads: {} }
+
+volumes:
+  pgdata:
+  uploads:

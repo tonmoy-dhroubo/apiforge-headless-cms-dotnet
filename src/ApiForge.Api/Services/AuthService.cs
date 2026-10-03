@@ -53,6 +53,14 @@ public class AuthService(IUserStore users, JwtTokenService jwt) : IAuthService
         return BuildAuthResponse(user);
     }
 
-    private AuthResponse BuildAuthResponse(UserRecord u) =>
-        new(jwt.Access(u.Id, u.Username, u.Roles), jwt.Refresh(u.Id, u.Username, u.Roles), "Bearer", u.Id, u.Username, u.Email, u.Roles);
+    private AuthResponse BuildAuthResponse(UserRecord user) =>
+        new(
+            Token: jwt.Access(user.Id, user.Username, user.Roles),
+            RefreshToken: jwt.Refresh(user.Id, user.Username, user.Roles),
+            Type: "Bearer",
+            UserId: user.Id,
+            Username: user.Username,
+            Email: user.Email,
+            Roles: user.Roles
+        );
 }

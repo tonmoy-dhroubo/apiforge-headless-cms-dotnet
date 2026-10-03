@@ -1,41 +1,465 @@
 using ApiForge.Core;
-using Npgsql;
-using NpgsqlTypes;
 using Microsoft.Extensions.Configuration;
+using Npgsql;
 
 namespace ApiForge.Infrastructure;
 
 public sealed class PostgresContentTypeStore(IConfiguration configuration) : IContentTypeStore
 {
-    private readonly string _cs = configuration["Storage:ConnectionString"] ?? throw new InvalidOperationException("Storage:ConnectionString is required");
-    private NpgsqlConnection Open() { var c = new NpgsqlConnection(_cs); c.Open(); return c; }
-    private static string Safe(string value) { if (string.IsNullOrWhiteSpace(value) || value.Any(c => !(char.IsLetterOrDigit(c) || c == '_'))) throw new ApiForgeException("Invalid identifier", 400); return value; }
-    private static async Task<ContentTypeDto> Read(string connectionString, NpgsqlDataReader r, CancellationToken ct)
+    private readonly string _connectionString = configuration["Storage:ConnectionString"] 
+        ?? throw new InvalidOperationException("Storage:ConnectionString is required");
+
+    private NpgsqlConnection OpenConnection()
     {
-        var id = r.GetInt64(0); var fields = new List<FieldDto>(); await using var fc = new NpgsqlConnection(connectionString); await fc.OpenAsync(ct); await using var f = new NpgsqlCommand("SELECT id,name,field_name,type,required,\"unique\",target_content_type,relation_type FROM fields WHERE content_type_id=@id ORDER BY id", fc); f.Parameters.AddWithValue("id", id); await using var fr = await f.ExecuteReaderAsync(ct); while (await fr.ReadAsync(ct)) fields.Add(new(fr.GetInt64(0), fr.GetString(1), fr.GetString(2), Enum.Parse<FieldType>(fr.GetString(3)), fr.IsDBNull(4) ? null : fr.GetBoolean(4), fr.IsDBNull(5) ? null : fr.GetBoolean(5), fr.IsDBNull(6) ? null : fr.GetString(6), fr.IsDBNull(7) ? null : fr.GetString(7)));
-        return new(id, r.GetString(1), r.GetString(2), r.GetString(3), r.IsDBNull(4) ? null : r.GetString(4), fields, r.IsDBNull(5) ? null : r.GetDateTime(5), r.IsDBNull(6) ? null : r.GetDateTime(6));
+        var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        return connection;
     }
-    public async Task<IReadOnlyList<ContentTypeDto>> All(CancellationToken ct) { await using var c = Open(); await using var q = new NpgsqlCommand("SELECT id,name,plural_name,api_id,description,created_at,updated_at FROM content_types ORDER BY id", c); await using var r = await q.ExecuteReaderAsync(ct); var result = new List<ContentTypeDto>(); while (await r.ReadAsync(ct)) result.Add(await Read(_cs, r, ct)); return result; }
-    private async Task<ContentTypeDto?> Find(string sql, object value, CancellationToken ct) { await using var c = Open(); await using var q = new NpgsqlCommand(sql, c); q.Parameters.AddWithValue("v", value); await using var r = await q.ExecuteReaderAsync(ct); return await r.ReadAsync(ct) ? await Read(_cs, r, ct) : null; }
-    public Task<ContentTypeDto?> ById(long id, CancellationToken ct) => Find("SELECT id,name,plural_name,api_id,description,created_at,updated_at FROM content_types WHERE id=@v", id, ct);
-    public Task<ContentTypeDto?> ByApiId(string apiId, CancellationToken ct) => Find("SELECT id,name,plural_name,api_id,description,created_at,updated_at FROM content_types WHERE api_id=@v", apiId, ct);
-    private static string FieldSql(FieldDto f) { var type = f.Type switch { FieldType.SHORT_TEXT => "VARCHAR(255)", FieldType.LONG_TEXT or FieldType.RICH_TEXT => "TEXT", FieldType.NUMBER => "NUMERIC", FieldType.BOOLEAN => "BOOLEAN", FieldType.DATETIME => "TIMESTAMP", FieldType.MEDIA or FieldType.RELATION => "BIGINT", _ => "TEXT" }; return $"{Safe(f.FieldName)} {type}{(f.Required == true ? " NOT NULL" : "")}{(f.Unique == true ? " UNIQUE" : "")}"; }
-    public async Task<ContentTypeDto> Create(ContentTypeDto dto, CancellationToken ct) { await using var c = Open(); await using var tx = await c.BeginTransactionAsync(ct); await using var q = new NpgsqlCommand("INSERT INTO content_types(name,plural_name,api_id,description) VALUES(@n,@p,@a,@d) RETURNING id,created_at,updated_at", c, tx); q.Parameters.AddWithValue("n", dto.Name); q.Parameters.AddWithValue("p", dto.PluralName ?? dto.Name + "s"); q.Parameters.AddWithValue("a", Safe(dto.ApiId)); q.Parameters.AddWithValue("d", (object?)dto.Description ?? DBNull.Value); await using var r = await q.ExecuteReaderAsync(ct); await r.ReadAsync(ct); var id = r.GetInt64(0); var created = r.GetDateTime(1); var updated = r.GetDateTime(2); await r.CloseAsync(); foreach (var f in dto.Fields ?? []) { await using var fq = new NpgsqlCommand("INSERT INTO fields(name,field_name,type,required,\"unique\",target_content_type,relation_type,content_type_id) VALUES(@n,@fn,@t,@r,@u,@tc,@rt,@id)", c, tx); fq.Parameters.AddWithValue("n", f.Name); fq.Parameters.AddWithValue("fn", Safe(f.FieldName)); fq.Parameters.AddWithValue("t", f.Type.ToString()); fq.Parameters.AddWithValue("r", (object?)f.Required ?? DBNull.Value); fq.Parameters.AddWithValue("u", (object?)f.Unique ?? DBNull.Value); fq.Parameters.AddWithValue("tc", (object?)f.TargetContentType ?? DBNull.Value); fq.Parameters.AddWithValue("rt", (object?)f.RelationType ?? DBNull.Value); fq.Parameters.AddWithValue("id", id); await fq.ExecuteNonQueryAsync(ct); } var columns = string.Join(", ", (dto.Fields ?? []).Select(FieldSql)); await using (var table = new NpgsqlCommand($"CREATE TABLE IF NOT EXISTS ct_{Safe(dto.ApiId)} (id BIGSERIAL PRIMARY KEY, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP{(columns.Length > 0 ? ", " + columns : "")})", c, tx)) await table.ExecuteNonQueryAsync(ct); await tx.CommitAsync(ct); return new(id, dto.Name, dto.PluralName ?? dto.Name + "s", dto.ApiId, dto.Description, dto.Fields, created, updated); }
-    public async Task<ContentTypeDto> Update(long id, ContentTypeDto dto, CancellationToken ct) { var old = await ById(id, ct) ?? throw new ApiForgeException("Content type not found", 404); await using var c = Open(); await using var q = new NpgsqlCommand("UPDATE content_types SET name=COALESCE(@n,name),plural_name=COALESCE(@p,plural_name),description=COALESCE(@d,description),updated_at=CURRENT_TIMESTAMP WHERE id=@id", c); q.Parameters.AddWithValue("n", (object?)dto.Name ?? DBNull.Value); q.Parameters.AddWithValue("p", (object?)dto.PluralName ?? DBNull.Value); q.Parameters.AddWithValue("d", (object?)dto.Description ?? DBNull.Value); q.Parameters.AddWithValue("id", id); await q.ExecuteNonQueryAsync(ct); return (await ById(id, ct))!; }
-    public async Task Delete(long id, CancellationToken ct) { var old = await ById(id, ct) ?? throw new ApiForgeException("Content type not found", 404); await using var c = Open(); await using var tx = await c.BeginTransactionAsync(ct); await using var d = new NpgsqlCommand($"DROP TABLE IF EXISTS ct_{Safe(old.ApiId)}; DELETE FROM content_types WHERE id=@id", c, tx); d.Parameters.AddWithValue("id", id); await d.ExecuteNonQueryAsync(ct); await tx.CommitAsync(ct); }
+
+    private static string SanitizeIdentifier(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Any(c => !(char.IsLetterOrDigit(c) || c == '_')))
+        {
+            throw new ApiForgeException("Invalid identifier", 400);
+        }
+
+        return value;
+    }
+
+    private static async Task<ContentTypeDto> ReadContentType(string connectionString, NpgsqlDataReader reader, CancellationToken ct)
+    {
+        var id = reader.GetInt64(0);
+        var name = reader.GetString(1);
+        var pluralName = reader.GetString(2);
+        var apiId = reader.GetString(3);
+        var description = reader.IsDBNull(4) ? null : reader.GetString(4);
+        var createdAt = reader.IsDBNull(5) ? (DateTime?)null : reader.GetDateTime(5);
+        var updatedAt = reader.IsDBNull(6) ? (DateTime?)null : reader.GetDateTime(6);
+
+        var fields = new List<FieldDto>();
+
+        await using (var fieldsConnection = new NpgsqlConnection(connectionString))
+        {
+            await fieldsConnection.OpenAsync(ct);
+
+            const string fieldsSql = """
+                SELECT id, name, field_name, type, required, "unique", target_content_type, relation_type
+                FROM fields
+                WHERE content_type_id = @id
+                ORDER BY id
+                """;
+
+            await using var fieldsCommand = new NpgsqlCommand(fieldsSql, fieldsConnection);
+            fieldsCommand.Parameters.AddWithValue("id", id);
+
+            await using var fieldsReader = await fieldsCommand.ExecuteReaderAsync(ct);
+            while (await fieldsReader.ReadAsync(ct))
+            {
+                var fieldDto = new FieldDto(
+                    Id: fieldsReader.GetInt64(0),
+                    Name: fieldsReader.GetString(1),
+                    FieldName: fieldsReader.GetString(2),
+                    Type: Enum.Parse<FieldType>(fieldsReader.GetString(3)),
+                    Required: fieldsReader.IsDBNull(4) ? null : fieldsReader.GetBoolean(4),
+                    Unique: fieldsReader.IsDBNull(5) ? null : fieldsReader.GetBoolean(5),
+                    TargetContentType: fieldsReader.IsDBNull(6) ? null : fieldsReader.GetString(6),
+                    RelationType: fieldsReader.IsDBNull(7) ? null : fieldsReader.GetString(7)
+                );
+
+                fields.Add(fieldDto);
+            }
+        }
+
+        return new ContentTypeDto(
+            Id: id,
+            Name: name,
+            PluralName: pluralName,
+            ApiId: apiId,
+            Description: description,
+            Fields: fields,
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt
+        );
+    }
+
+    public async Task<IReadOnlyList<ContentTypeDto>> All(CancellationToken ct)
+    {
+        await using var connection = OpenConnection();
+
+        const string sql = """
+            SELECT id, name, plural_name, api_id, description, created_at, updated_at
+            FROM content_types
+            ORDER BY id
+            """;
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        var result = new List<ContentTypeDto>();
+        while (await reader.ReadAsync(ct))
+        {
+            result.Add(await ReadContentType(_connectionString, reader, ct));
+        }
+
+        return result;
+    }
+
+    private async Task<ContentTypeDto?> FindOne(string sql, object value, CancellationToken ct)
+    {
+        await using var connection = OpenConnection();
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("v", value);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        if (await reader.ReadAsync(ct))
+        {
+            return await ReadContentType(_connectionString, reader, ct);
+        }
+
+        return null;
+    }
+
+    public Task<ContentTypeDto?> ById(long id, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT id, name, plural_name, api_id, description, created_at, updated_at
+            FROM content_types
+            WHERE id = @v
+            """;
+
+        return FindOne(sql, id, ct);
+    }
+
+    public Task<ContentTypeDto?> ByApiId(string apiId, CancellationToken ct)
+    {
+        const string sql = """
+            SELECT id, name, plural_name, api_id, description, created_at, updated_at
+            FROM content_types
+            WHERE api_id = @v
+            """;
+
+        return FindOne(sql, apiId, ct);
+    }
+
+    private static string FieldToSqlColumnDefinition(FieldDto field)
+    {
+        var sqlType = field.Type switch
+        {
+            FieldType.SHORT_TEXT => "VARCHAR(255)",
+            FieldType.LONG_TEXT or FieldType.RICH_TEXT => "TEXT",
+            FieldType.NUMBER => "NUMERIC",
+            FieldType.BOOLEAN => "BOOLEAN",
+            FieldType.DATETIME => "TIMESTAMP",
+            FieldType.MEDIA or FieldType.RELATION => "BIGINT",
+            _ => "TEXT"
+        };
+
+        var safeFieldName = SanitizeIdentifier(field.FieldName);
+        var requiredConstraint = field.Required == true ? " NOT NULL" : "";
+        var uniqueConstraint = field.Unique == true ? " UNIQUE" : "";
+
+        return $"{safeFieldName} {sqlType}{requiredConstraint}{uniqueConstraint}";
+    }
+
+    public async Task<ContentTypeDto> Create(ContentTypeDto dto, CancellationToken ct)
+    {
+        await using var connection = OpenConnection();
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        const string insertTypeSql = """
+            INSERT INTO content_types (name, plural_name, api_id, description)
+            VALUES (@name, @pluralName, @apiId, @description)
+            RETURNING id, created_at, updated_at
+            """;
+
+        await using var typeCommand = new NpgsqlCommand(insertTypeSql, connection, transaction);
+        typeCommand.Parameters.AddWithValue("name", dto.Name);
+        typeCommand.Parameters.AddWithValue("pluralName", dto.PluralName ?? dto.Name + "s");
+        typeCommand.Parameters.AddWithValue("apiId", SanitizeIdentifier(dto.ApiId));
+        typeCommand.Parameters.AddWithValue("description", (object?)dto.Description ?? DBNull.Value);
+
+        await using var reader = await typeCommand.ExecuteReaderAsync(ct);
+        await reader.ReadAsync(ct);
+
+        var id = reader.GetInt64(0);
+        var createdAt = reader.GetDateTime(1);
+        var updatedAt = reader.GetDateTime(2);
+        await reader.CloseAsync();
+
+        // Insert field definitions
+        foreach (var field in dto.Fields ?? [])
+        {
+            const string insertFieldSql = """
+                INSERT INTO fields (name, field_name, type, required, "unique", target_content_type, relation_type, content_type_id)
+                VALUES (@name, @fieldName, @type, @required, @unique, @targetContentType, @relationType, @contentTypeId)
+                """;
+
+            await using var fieldCommand = new NpgsqlCommand(insertFieldSql, connection, transaction);
+            fieldCommand.Parameters.AddWithValue("name", field.Name);
+            fieldCommand.Parameters.AddWithValue("fieldName", SanitizeIdentifier(field.FieldName));
+            fieldCommand.Parameters.AddWithValue("type", field.Type.ToString());
+            fieldCommand.Parameters.AddWithValue("required", (object?)field.Required ?? DBNull.Value);
+            fieldCommand.Parameters.AddWithValue("unique", (object?)field.Unique ?? DBNull.Value);
+            fieldCommand.Parameters.AddWithValue("targetContentType", (object?)field.TargetContentType ?? DBNull.Value);
+            fieldCommand.Parameters.AddWithValue("relationType", (object?)field.RelationType ?? DBNull.Value);
+            fieldCommand.Parameters.AddWithValue("contentTypeId", id);
+
+            await fieldCommand.ExecuteNonQueryAsync(ct);
+        }
+
+        // Dynamically create physical table ct_{apiId}
+        var columnDefinitions = (dto.Fields ?? []).Select(FieldToSqlColumnDefinition).ToList();
+        var columnsSql = columnDefinitions.Count > 0 ? ", " + string.Join(", ", columnDefinitions) : "";
+
+        var safeApiId = SanitizeIdentifier(dto.ApiId);
+        var createTableSql = $"""
+            CREATE TABLE IF NOT EXISTS ct_{safeApiId} (
+                id BIGSERIAL PRIMARY KEY,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                {columnsSql}
+            )
+            """;
+
+        await using var createTableCommand = new NpgsqlCommand(createTableSql, connection, transaction);
+        await createTableCommand.ExecuteNonQueryAsync(ct);
+
+        await transaction.CommitAsync(ct);
+
+        return new ContentTypeDto(
+            Id: id,
+            Name: dto.Name,
+            PluralName: dto.PluralName ?? dto.Name + "s",
+            ApiId: dto.ApiId,
+            Description: dto.Description,
+            Fields: dto.Fields,
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt
+        );
+    }
+
+    public async Task<ContentTypeDto> Update(long id, ContentTypeDto dto, CancellationToken ct)
+    {
+        var existing = await ById(id, ct) 
+            ?? throw new ApiForgeException("Content type not found", 404);
+
+        await using var connection = OpenConnection();
+
+        const string updateSql = """
+            UPDATE content_types
+            SET name = COALESCE(@name, name),
+                plural_name = COALESCE(@pluralName, plural_name),
+                description = COALESCE(@description, description),
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = @id
+            """;
+
+        await using var command = new NpgsqlCommand(updateSql, connection);
+        command.Parameters.AddWithValue("name", (object?)dto.Name ?? DBNull.Value);
+        command.Parameters.AddWithValue("pluralName", (object?)dto.PluralName ?? DBNull.Value);
+        command.Parameters.AddWithValue("description", (object?)dto.Description ?? DBNull.Value);
+        command.Parameters.AddWithValue("id", id);
+
+        await command.ExecuteNonQueryAsync(ct);
+
+        return (await ById(id, ct))!;
+    }
+
+    public async Task Delete(long id, CancellationToken ct)
+    {
+        var existing = await ById(id, ct) 
+            ?? throw new ApiForgeException("Content type not found", 404);
+
+        await using var connection = OpenConnection();
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+
+        var safeApiId = SanitizeIdentifier(existing.ApiId);
+        var dropTableSql = $"DROP TABLE IF EXISTS ct_{safeApiId}; DELETE FROM content_types WHERE id = @id";
+
+        await using var deleteCommand = new NpgsqlCommand(dropTableSql, connection, transaction);
+        deleteCommand.Parameters.AddWithValue("id", id);
+
+        await deleteCommand.ExecuteNonQueryAsync(ct);
+        await transaction.CommitAsync(ct);
+    }
 }
 
 public sealed class PostgresContentStore(IContentTypeStore types, IConfiguration configuration) : IContentStore
 {
-    private readonly string _cs = configuration["Storage:ConnectionString"]!;
-    private NpgsqlConnection Open() { var c = new NpgsqlConnection(_cs); c.Open(); return c; }
-    private static string Safe(string value) { if (value.Any(c => !(char.IsLetterOrDigit(c) || c == '_'))) throw new ApiForgeException("Invalid identifier", 400); return value; }
-    private async Task Ensure(string api, CancellationToken ct) { if (await types.ByApiId(api, ct) is null) throw new ApiForgeException("Content type not found", 404); }
-    private static IDictionary<string, object?> Row(NpgsqlDataReader r) { var d = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase); for (var i = 0; i < r.FieldCount; i++) d[r.GetName(i)] = r.IsDBNull(i) ? null : r.GetValue(i); return d; }
-    public async Task<IDictionary<string, object?>?> Create(string api, IDictionary<string, object?> values, CancellationToken ct) { await Ensure(api, ct); await using var c = Open(); var keys = values.Keys.Select(Safe).ToList(); await using var q = new NpgsqlCommand($"INSERT INTO ct_{Safe(api)} ({string.Join(',', keys)}) VALUES ({string.Join(',', keys.Select((_,i)=>"@p"+i))}) RETURNING *", c); for (var i=0;i<keys.Count;i++) q.Parameters.AddWithValue("p"+i, values[keys[i]] ?? DBNull.Value); await using var r = await q.ExecuteReaderAsync(ct); return await r.ReadAsync(ct) ? Row(r) : null; }
-    public async Task<IReadOnlyList<IDictionary<string, object?>>> All(string api, CancellationToken ct) { await Ensure(api, ct); await using var c=Open(); await using var r=await new NpgsqlCommand($"SELECT * FROM ct_{Safe(api)} ORDER BY id",c).ExecuteReaderAsync(ct); var x=new List<IDictionary<string,object?>>(); while(await r.ReadAsync(ct)) x.Add(Row(r)); return x; }
-    public async Task<IReadOnlyList<IDictionary<string, object?>>> Search(string api, IDictionary<string, object?> filters, CancellationToken ct) { await Ensure(api,ct); await using var c=Open(); var keys=filters.Keys.Select(Safe).ToList(); var where=keys.Count==0?"TRUE":string.Join(" AND ",keys.Select((k,i)=>$"{k}=@p{i}")); await using var q=new NpgsqlCommand($"SELECT * FROM ct_{Safe(api)} WHERE {where}",c); for(var i=0;i<keys.Count;i++) q.Parameters.AddWithValue("p"+i,filters[keys[i]]??DBNull.Value); await using var r=await q.ExecuteReaderAsync(ct); var x=new List<IDictionary<string,object?>>(); while(await r.ReadAsync(ct)) x.Add(Row(r)); return x; }
-    public async Task<IDictionary<string, object?>?> ById(string api,long id,CancellationToken ct){await Ensure(api,ct);await using var c=Open();await using var q=new NpgsqlCommand($"SELECT * FROM ct_{Safe(api)} WHERE id=@id",c);q.Parameters.AddWithValue("id",id);await using var r=await q.ExecuteReaderAsync(ct);return await r.ReadAsync(ct)?Row(r):null;}
-    public async Task<IDictionary<string, object?>?> Update(string api,long id,IDictionary<string,object?> values,CancellationToken ct){await Ensure(api,ct);await using var c=Open();var keys=values.Keys.Select(Safe).ToList();await using var q=new NpgsqlCommand($"UPDATE ct_{Safe(api)} SET {string.Join(',',keys.Select((k,i)=>$"{k}=@p{i}"))},updated_at=CURRENT_TIMESTAMP WHERE id=@id RETURNING *",c);for(var i=0;i<keys.Count;i++)q.Parameters.AddWithValue("p"+i,values[keys[i]]??DBNull.Value);q.Parameters.AddWithValue("id",id);await using var r=await q.ExecuteReaderAsync(ct);return await r.ReadAsync(ct)?Row(r):null;}
-    public async Task Delete(string api,long id,CancellationToken ct){if(await ById(api,id,ct) is null)throw new ApiForgeException("Content not found",404);await using var c=Open();await using var q=new NpgsqlCommand($"DELETE FROM ct_{Safe(api)} WHERE id=@id",c);q.Parameters.AddWithValue("id",id);await q.ExecuteNonQueryAsync(ct);}
+    private readonly string _connectionString = configuration["Storage:ConnectionString"]!;
+
+    private NpgsqlConnection OpenConnection()
+    {
+        var connection = new NpgsqlConnection(_connectionString);
+        connection.Open();
+        return connection;
+    }
+
+    private static string SanitizeIdentifier(string value)
+    {
+        if (value.Any(c => !(char.IsLetterOrDigit(c) || c == '_')))
+        {
+            throw new ApiForgeException("Invalid identifier", 400);
+        }
+
+        return value;
+    }
+
+    private async Task EnsureContentTypeExists(string apiId, CancellationToken ct)
+    {
+        var contentType = await types.ByApiId(apiId, ct);
+        if (contentType is null)
+        {
+            throw new ApiForgeException("Content type not found", 404);
+        }
+    }
+
+    private static IDictionary<string, object?> ReadRow(NpgsqlDataReader reader)
+    {
+        var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+
+        for (var i = 0; i < reader.FieldCount; i++)
+        {
+            var columnName = reader.GetName(i);
+            row[columnName] = reader.IsDBNull(i) ? null : reader.GetValue(i);
+        }
+
+        return row;
+    }
+
+    public async Task<IDictionary<string, object?>?> Create(string apiId, IDictionary<string, object?> values, CancellationToken ct)
+    {
+        await EnsureContentTypeExists(apiId, ct);
+
+        await using var connection = OpenConnection();
+        var keys = values.Keys.Select(SanitizeIdentifier).ToList();
+
+        var columnsClause = string.Join(", ", keys);
+        var parametersClause = string.Join(", ", keys.Select((_, i) => "@p" + i));
+
+        var safeTableName = SanitizeIdentifier(apiId);
+        var insertSql = $"INSERT INTO ct_{safeTableName} ({columnsClause}) VALUES ({parametersClause}) RETURNING *";
+
+        await using var command = new NpgsqlCommand(insertSql, connection);
+
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var key = keys[i];
+            command.Parameters.AddWithValue("p" + i, values[key] ?? DBNull.Value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRow(reader) : null;
+    }
+
+    public async Task<IReadOnlyList<IDictionary<string, object?>>> All(string apiId, CancellationToken ct)
+    {
+        await EnsureContentTypeExists(apiId, ct);
+
+        await using var connection = OpenConnection();
+        var safeTableName = SanitizeIdentifier(apiId);
+        var sql = $"SELECT * FROM ct_{safeTableName} ORDER BY id";
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        var rows = new List<IDictionary<string, object?>>();
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(ReadRow(reader));
+        }
+
+        return rows;
+    }
+
+    public async Task<IReadOnlyList<IDictionary<string, object?>>> Search(string apiId, IDictionary<string, object?> filters, CancellationToken ct)
+    {
+        await EnsureContentTypeExists(apiId, ct);
+
+        await using var connection = OpenConnection();
+        var keys = filters.Keys.Select(SanitizeIdentifier).ToList();
+
+        var whereClause = keys.Count == 0 
+            ? "TRUE" 
+            : string.Join(" AND ", keys.Select((key, i) => $"{key} = @p{i}"));
+
+        var safeTableName = SanitizeIdentifier(apiId);
+        var sql = $"SELECT * FROM ct_{safeTableName} WHERE {whereClause}";
+
+        await using var command = new NpgsqlCommand(sql, connection);
+
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var key = keys[i];
+            command.Parameters.AddWithValue("p" + i, filters[key] ?? DBNull.Value);
+        }
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+
+        var rows = new List<IDictionary<string, object?>>();
+        while (await reader.ReadAsync(ct))
+        {
+            rows.Add(ReadRow(reader));
+        }
+
+        return rows;
+    }
+
+    public async Task<IDictionary<string, object?>?> ById(string apiId, long id, CancellationToken ct)
+    {
+        await EnsureContentTypeExists(apiId, ct);
+
+        await using var connection = OpenConnection();
+        var safeTableName = SanitizeIdentifier(apiId);
+        var sql = $"SELECT * FROM ct_{safeTableName} WHERE id = @id";
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRow(reader) : null;
+    }
+
+    public async Task<IDictionary<string, object?>?> Update(string apiId, long id, IDictionary<string, object?> values, CancellationToken ct)
+    {
+        await EnsureContentTypeExists(apiId, ct);
+
+        await using var connection = OpenConnection();
+        var keys = values.Keys.Select(SanitizeIdentifier).ToList();
+
+        var setClause = string.Join(", ", keys.Select((key, i) => $"{key} = @p{i}"));
+        var safeTableName = SanitizeIdentifier(apiId);
+        var sql = $"UPDATE ct_{safeTableName} SET {setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = @id RETURNING *";
+
+        await using var command = new NpgsqlCommand(sql, connection);
+
+        for (var i = 0; i < keys.Count; i++)
+        {
+            var key = keys[i];
+            command.Parameters.AddWithValue("p" + i, values[key] ?? DBNull.Value);
+        }
+
+        command.Parameters.AddWithValue("id", id);
+
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? ReadRow(reader) : null;
+    }
+
+    public async Task Delete(string apiId, long id, CancellationToken ct)
+    {
+        var existing = await ById(apiId, id, ct);
+        if (existing is null)
+        {
+            throw new ApiForgeException("Content not found", 404);
+        }
+
+        await using var connection = OpenConnection();
+        var safeTableName = SanitizeIdentifier(apiId);
+        var sql = $"DELETE FROM ct_{safeTableName} WHERE id = @id";
+
+        await using var command = new NpgsqlCommand(sql, connection);
+        command.Parameters.AddWithValue("id", id);
+
+        await command.ExecuteNonQueryAsync(ct);
+    }
 }

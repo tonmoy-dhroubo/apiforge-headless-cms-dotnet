@@ -4,17 +4,30 @@ namespace ApiForge.Api.Helpers;
 
 public static class JsonHelper
 {
-    public static Dictionary<string, object?> ToDictionary(JsonElement json) =>
-        json.EnumerateObject().ToDictionary(x => x.Name, x => (object?)JsonElementValue(x.Value), StringComparer.OrdinalIgnoreCase);
-
-    public static object? JsonElementValue(JsonElement x) => x.ValueKind switch
+    /// <summary>
+    /// Converts a JsonElement object into a case-insensitive dictionary suitable for dynamic database queries.
+    /// </summary>
+    public static Dictionary<string, object?> ToDictionary(JsonElement json)
     {
-        JsonValueKind.String => x.GetString(),
-        JsonValueKind.Number when x.TryGetInt64(out var i) => i,
-        JsonValueKind.Number => x.GetDouble(),
+        return json.EnumerateObject()
+            .ToDictionary(
+                property => property.Name,
+                property => ExtractValue(property.Value),
+                StringComparer.OrdinalIgnoreCase
+            );
+    }
+
+    /// <summary>
+    /// Extracts the primitive CLR value from a JsonElement.
+    /// </summary>
+    public static object? ExtractValue(JsonElement element) => element.ValueKind switch
+    {
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Number when element.TryGetInt64(out var longVal) => longVal,
+        JsonValueKind.Number => element.GetDouble(),
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.Null => null,
-        _ => x.GetRawText()
+        _ => element.GetRawText()
     };
 }
