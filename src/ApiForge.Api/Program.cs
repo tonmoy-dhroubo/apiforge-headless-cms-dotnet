@@ -11,6 +11,18 @@ using Microsoft.IdentityModel.Tokens;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Blob Storage Provider
+var blobProvider = builder.Configuration["Storage:BlobProvider"];
+if (string.Equals(blobProvider, "Memory", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddSingleton<IBlobStorage, InMemoryBlobStorage>();
+}
+else
+{
+    // Default to LocalDisk (or S3/MinIO/R2 when registered)
+    builder.Services.AddSingleton<IBlobStorage, LocalDiskBlobStorage>();
+}
+
 // Storage Provider Stores
 var isPostgres = builder.Configuration["Storage:Provider"]?.Equals("Postgres", StringComparison.OrdinalIgnoreCase) == true;
 if (isPostgres)

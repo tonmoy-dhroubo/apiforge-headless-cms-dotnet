@@ -1,35 +1,25 @@
 using System.Collections.Concurrent;
 using ApiForge.Core;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 
 namespace ApiForge.Infrastructure;
 
-public sealed class MediaStore(IWebHostEnvironment environment) : IMediaStore
+public sealed class MediaStore(IBlobStorage blobStorage) : IMediaStore
 {
     private readonly ConcurrentDictionary<long, MediaRecord> _items = new();
     private long _nextId;
 
-    private string UploadRootDirectory => Path.Combine(environment.ContentRootPath, "uploads");
-
     public async Task<MediaRecord> Save(IFormFile file, CancellationToken ct = default)
     {
-        Directory.CreateDirectory(UploadRootDirectory);
-
         var originalFileName = Path.GetFileName(file.FileName);
         var extension = Path.GetExtension(originalFileName);
-        var hash = Guid.NewGuid().ToString();
-        var storedFileName = hash + extension;
-        var physicalPath = Path.Combine(UploadRootDirectory, storedFileName);
 
-        await using (var outputStream = File.Create(physicalPath))
-        {
-            await file.CopyToAsync(outputStream, ct);
-        }
+        await using var stream = file.OpenReadStream();
+        var blob = await blobStorage.UploadAsync(originalFileName, stream, file.ContentType, ct);
 
         var id = Interlocked.Increment(ref _nextId);
-        var sizeInKb = file.Length / 1024d;
-        var publicUrl = "/api/upload/files/" + storedFileName;
+        var sizeInKb = blob.SizeBytes / 1024d;
+        var hash = Path.GetFileNameWithoutExtension(blob.StorageKey);
 
         var record = new MediaRecord(
             Id: id,
@@ -42,9 +32,9 @@ public sealed class MediaStore(IWebHostEnvironment environment) : IMediaStore
             Ext: extension,
             Mime: file.ContentType,
             Size: sizeInKb,
-            Url: publicUrl,
-            Provider: "local",
-            Path: physicalPath
+            Url: blob.Url,
+            Provider: blobStorage.ProviderName,
+            Path: blob.StorageKey
         );
 
         _items[record.Id] = record;
@@ -68,29 +58,20 @@ public sealed class MediaStore(IWebHostEnvironment environment) : IMediaStore
 
     public Task<MediaRecord?> ByFile(string filename, CancellationToken ct = default)
     {
-        var record = _items.Values.FirstOrDefault(item => (item.Hash + item.Ext) == filename);
+        var record = _items.Values.FirstOrDefault(item => 
+            string.Equals(item.Path, filename, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(item.Hash + item.Ext, filename, StringComparison.OrdinalIgnoreCase));
         return Task.FromResult(record);
     }
 
-    public Task<bool> Remove(long id, CancellationToken ct = default)
+    public async Task<bool> Remove(long id, CancellationToken ct = default)
     {
         if (!_items.TryRemove(id, out var record))
         {
-            return Task.FromResult(false);
+            return false;
         }
 
-        try
-        {
-            if (File.Exists(record.Path))
-            {
-                File.Delete(record.Path);
-            }
-        }
-        catch
-        {
-            // Suppress file deletion errors if file is locked or missing
-        }
-
-        return Task.FromResult(true);
+        await blobStorage.DeleteAsync(record.Path, ct);
+        return true;
     }
 }

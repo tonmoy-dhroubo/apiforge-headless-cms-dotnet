@@ -51,7 +51,7 @@ public class MediaController(IMediaService service) : ControllerBase
     [AllowAnonymous]
     public async Task<IActionResult> ServeFile(string fileName, CancellationToken ct)
     {
-        var (path, mime, name) = await service.GetFileByNameAsync(fileName, ct);
-        return PhysicalFile(path, mime, name);
+        var result = await service.GetFileStreamByNameAsync(fileName, ct);
+        return File(result.Stream, result.MimeType, result.FileName);
     }
 }

@@ -98,4 +98,26 @@ public sealed class StoreTests
         Assert.NotEqual(rawPassword, hash);
         Assert.True(BCrypt.Net.BCrypt.Verify(rawPassword, hash));
     }
+
+    [Fact]
+    public async Task InMemoryBlobStorage_roundtrips_bytes()
+    {
+        var storage = new InMemoryBlobStorage();
+        using var stream = new MemoryStream("test content"u8.ToArray());
+
+        var blob = await storage.UploadAsync("document.pdf", stream, "application/pdf");
+        Assert.NotNull(blob.StorageKey);
+        Assert.Equal("memory", storage.ProviderName);
+        Assert.True(await storage.ExistsAsync(blob.StorageKey));
+
+        using var readStream = await storage.OpenReadAsync(blob.StorageKey);
+        Assert.NotNull(readStream);
+        using var reader = new StreamReader(readStream);
+        var text = await reader.ReadToEndAsync();
+        Assert.Equal("test content", text);
+
+        var deleted = await storage.DeleteAsync(blob.StorageKey);
+        Assert.True(deleted);
+        Assert.False(await storage.ExistsAsync(blob.StorageKey));
+    }
 }

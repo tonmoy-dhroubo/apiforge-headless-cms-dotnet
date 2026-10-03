@@ -1,11 +1,10 @@
 using Microsoft.AspNetCore.Http;
 using ApiForge.Core;
 using ApiForge.Core.Services;
-using ApiForge.Infrastructure;
 
 namespace ApiForge.Api.Services;
 
-public class MediaService(IMediaStore store) : IMediaService
+public class MediaService(IMediaStore store, IBlobStorage blobStorage) : IMediaService
 {
     private const long MaxFileSizeInBytes = 25 * 1024 * 1024; // 25 MB
     private static readonly HashSet<string> BlockedExtensions = new(StringComparer.OrdinalIgnoreCase)
@@ -58,14 +57,24 @@ public class MediaService(IMediaStore store) : IMediaService
         }
     }
 
-    public async Task<(string Path, string Mime, string Name)> GetFileByNameAsync(string fileName, CancellationToken ct = default)
+    public async Task<MediaStreamResult> GetFileStreamByNameAsync(string fileName, CancellationToken ct = default)
     {
         var media = await store.ByFile(fileName, ct);
-        if (media is null || !File.Exists(media.Path))
+        if (media is null)
         {
             throw new ApiForgeException("File not found", 404);
         }
 
-        return (media.Path, media.Mime ?? "application/octet-stream", media.Name);
+        var stream = await blobStorage.OpenReadAsync(media.Path, ct);
+        if (stream is null)
+        {
+            throw new ApiForgeException("File not found in storage", 404);
+        }
+
+        return new MediaStreamResult(
+            Stream: stream,
+            MimeType: media.Mime ?? "application/octet-stream",
+            FileName: media.Name
+        );
     }
 }

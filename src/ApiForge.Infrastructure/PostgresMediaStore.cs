@@ -1,17 +1,14 @@
 using ApiForge.Core;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using Npgsql;
 
 namespace ApiForge.Infrastructure;
 
-public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfiguration configuration) : IMediaStore
+public sealed class PostgresMediaStore(IConfiguration configuration, IBlobStorage blobStorage) : IMediaStore
 {
     private readonly string _connectionString = configuration["Storage:ConnectionString"] 
         ?? throw new InvalidOperationException("Storage:ConnectionString is required");
-
-    private string UploadRootDirectory => Path.Combine(environment.ContentRootPath, "uploads");
 
     private async Task<NpgsqlConnection> OpenConnectionAsync(CancellationToken ct = default)
     {
@@ -22,18 +19,13 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
     public async Task<MediaRecord> Save(IFormFile file, CancellationToken ct = default)
     {
-        Directory.CreateDirectory(UploadRootDirectory);
-
         var originalFileName = Path.GetFileName(file.FileName);
         var extension = Path.GetExtension(originalFileName);
-        var hash = Guid.NewGuid().ToString();
-        var storedFileName = hash + extension;
-        var physicalPath = Path.Combine(UploadRootDirectory, storedFileName);
 
-        await using (var outputStream = File.Create(physicalPath))
-        {
-            await file.CopyToAsync(outputStream, ct);
-        }
+        await using var stream = file.OpenReadStream();
+        var blob = await blobStorage.UploadAsync(originalFileName, stream, file.ContentType, ct);
+        var hash = Path.GetFileNameWithoutExtension(blob.StorageKey);
+        var sizeInKb = blob.SizeBytes / 1024d;
 
         try
         {
@@ -41,12 +33,9 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
             const string insertSql = """
                 INSERT INTO media (name, hash, ext, mime, size, url, provider)
-                VALUES (@name, @hash, @ext, @mime, @size, @url, 'local')
+                VALUES (@name, @hash, @ext, @mime, @size, @url, @provider)
                 RETURNING id, created_at
                 """;
-
-            var sizeInKb = file.Length / 1024d;
-            var publicUrl = "/api/upload/files/" + storedFileName;
 
             await using var command = new NpgsqlCommand(insertSql, connection);
             command.Parameters.AddWithValue("name", originalFileName);
@@ -54,7 +43,8 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
             command.Parameters.AddWithValue("ext", extension);
             command.Parameters.AddWithValue("mime", (object?)file.ContentType ?? DBNull.Value);
             command.Parameters.AddWithValue("size", sizeInKb);
-            command.Parameters.AddWithValue("url", publicUrl);
+            command.Parameters.AddWithValue("url", blob.Url);
+            command.Parameters.AddWithValue("provider", blobStorage.ProviderName);
 
             await using var reader = await command.ExecuteReaderAsync(ct);
             await reader.ReadAsync(ct);
@@ -72,23 +62,21 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
                 Ext: extension,
                 Mime: file.ContentType,
                 Size: sizeInKb,
-                Url: publicUrl,
-                Provider: "local",
-                Path: physicalPath
+                Url: blob.Url,
+                Provider: blobStorage.ProviderName,
+                Path: blob.StorageKey
             );
         }
         catch
         {
+            // Clean up blob on database transaction failure
             try
             {
-                if (File.Exists(physicalPath))
-                {
-                    File.Delete(physicalPath);
-                }
+                await blobStorage.DeleteAsync(blob.StorageKey, ct);
             }
             catch
             {
-                // Suppress disk cleanup failure during rollback
+                // Suppress rollback cleanup failure
             }
 
             throw;
@@ -108,8 +96,8 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
         var mime = reader.IsDBNull(8) ? null : reader.GetString(8);
         var size = reader.IsDBNull(9) ? 0d : Convert.ToDouble(reader.GetValue(9));
         var url = reader.IsDBNull(10) ? "/api/upload/files/" + hash + ext : reader.GetString(10);
-        var provider = reader.IsDBNull(11) ? "local" : reader.GetString(11);
-        var physicalPath = Path.Combine(UploadRootDirectory, hash + ext);
+        var provider = reader.IsDBNull(11) ? blobStorage.ProviderName : reader.GetString(11);
+        var storageKey = hash + ext;
 
         return new MediaRecord(
             Id: id,
@@ -124,7 +112,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
             Size: size,
             Url: url,
             Provider: provider,
-            Path: physicalPath
+            Path: storageKey
         );
     }
 
@@ -197,17 +185,7 @@ public sealed class PostgresMediaStore(IWebHostEnvironment environment, IConfigu
 
         if (success)
         {
-            try
-            {
-                if (File.Exists(existing.Path))
-                {
-                    File.Delete(existing.Path);
-                }
-            }
-            catch
-            {
-                // Suppress disk cleanup failure
-            }
+            await blobStorage.DeleteAsync(existing.Path, ct);
         }
 
         return success;
