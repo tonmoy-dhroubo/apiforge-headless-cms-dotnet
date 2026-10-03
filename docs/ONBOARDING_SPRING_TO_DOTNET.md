@@ -110,7 +110,7 @@ public class AuthService implements IAuthService {
 Both Java and C# have records. In C#, records support non-destructive mutation via `with` expressions:
 
 ```csharp
-// Defined in ApiForge.Core/Contracts.cs:
+// Defined in ApiForge.Core/DTOs/ContentTypeDtos.cs:
 public sealed record ContentTypeDto(
     long? Id, 
     string Name, 
@@ -428,7 +428,7 @@ Or on error:
 ```
 
 ### In C#:
-In `ApiForge.Core/Contracts.cs`:
+In `ApiForge.Core/Common/ApiResponse.cs`:
 ```csharp
 public sealed record ApiResponse<T>(bool Success, string? Message, T? Data, string? Error)
 {
@@ -585,7 +585,7 @@ docker compose up --build
 Let's walk through how to add a hypothetical new feature: **"Webhooks"** (triggering HTTP calls when content changes).
 
 ### Step 1: Define the Domain Models & Store Interface
-In `src/ApiForge.Core/Contracts.cs`:
+In `src/ApiForge.Core/DTOs/` and `src/ApiForge.Core/Stores/`:
 ```csharp
 public sealed record WebhookDto(long? Id, string Url, string EventType, bool Active);
 

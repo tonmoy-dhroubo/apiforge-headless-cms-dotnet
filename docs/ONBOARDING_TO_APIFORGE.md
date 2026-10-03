@@ -233,10 +233,26 @@ apiforge-headless-cms-dotnet/
 │   ├── ApiForge.Core/
 │   │   ├── ApiForge.Core.csproj
 │   │   │   └── Project file referencing Microsoft.AspNetCore.App framework for web primitives.
-│   │   ├── Contracts.cs
-│   │   │   └── Core domain models: ApiResponse<T>, DTOs, Enums, Store interfaces.
+│   │   ├── Common/
+│   │   │   └── ApiResponse.cs: Universal JSON response envelope.
+│   │   ├── Enums/
+│   │   │   └── FieldType.cs: Supported field types enum.
+│   │   ├── Models/
+│   │   │   ├── UserRecord.cs: Internal user domain model.
+│   │   │   └── MediaRecord.cs: Media asset metadata domain model.
+│   │   ├── DTOs/
+│   │   │   ├── AuthDtos.cs: RegisterRequest, LoginRequest, AuthResponse, UserDto, etc.
+│   │   │   ├── ContentTypeDtos.cs: ContentTypeDto and FieldDto.
+│   │   │   └── PermissionDtos.cs: ApiPermissionDto, ContentPermissionDto, PermissionCheck.
+│   │   ├── Stores/
+│   │   │   ├── IUserStore.cs
+│   │   │   ├── IContentTypeStore.cs
+│   │   │   ├── IContentStore.cs
+│   │   │   ├── IMediaStore.cs
+│   │   │   └── IPermissionStore.cs
 │   │   └── Services/
-│   │       ├── IAuthService.cs (contains IAuthService and IUserService)
+│   │       ├── IAuthService.cs
+│   │       ├── IUserService.cs
 │   │       ├── IContentTypeService.cs
 │   │       ├── IContentService.cs
 │   │       ├── IMediaService.cs
@@ -302,37 +318,25 @@ apiforge-headless-cms-dotnet/
 
 ### 6.1 ApiForge.Core (Domain Contracts & Interfaces)
 
-#### [`ApiResponse<T>`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L5-L9)
-The standard JSON response envelope for all endpoints:
-* `bool Success`: Indicates whether the operation succeeded.
-* `string? Message`: Optional human-readable message (e.g. `"User registered successfully"`).
-* `T? Data`: The payload data on success, or `default` on error.
-* `string? Error`: Error message on failure, or `null` on success.
-* Factory methods:
-  * `ApiResponse<T>.Ok(T? data, string? message = null)`
-  * `ApiResponse<T>.Fail(string error)`
+#### Common & Enums
+* [`ApiResponse<T>`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Common/ApiResponse.cs): Universal response envelope `(bool Success, string? Message, T? Data, string? Error)`.
+* [`FieldType`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Enums/FieldType.cs): Enum of supported field types: `SHORT_TEXT`, `LONG_TEXT`, `RICH_TEXT`, `NUMBER`, `BOOLEAN`, `DATETIME`, `MEDIA`, `RELATION`.
 
-#### Domain DTOs & Records
-* [`AuthResponse`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L11): `(Token, RefreshToken, Type, UserId, Username, Email, Roles)`
-* [`RegisterRequest`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L12): `(Username, Email, Password, Firstname, Lastname)`
-* [`LoginRequest`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L13): `(Username, Email, Password)`
-* [`RefreshRequest`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L14): `(RefreshToken)`
-* [`UserDto`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L15): Safe representation of a user without password hash: `(Id, Username, Email, Firstname, Lastname, Roles, Enabled)`
-* [`FieldType`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L16): Enum of supported field types: `SHORT_TEXT`, `LONG_TEXT`, `RICH_TEXT`, `NUMBER`, `BOOLEAN`, `DATETIME`, `MEDIA`, `RELATION`.
-* [`FieldDto`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L17): Defines a single column: `(Id, Name, FieldName, Type, Required, Unique, TargetContentType, RelationType)`.
-* [`ContentTypeDto`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L18): Defines a content model: `(Id, Name, PluralName, ApiId, Description, Fields, CreatedAt, UpdatedAt)`.
-* [`ApiPermissionDto`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L19): Route rule: `(Id, ContentTypeApiId, Endpoint, Method, AllowedRoles, CreatedAt)`.
-* [`ContentPermissionDto`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L20): Action rule: `(Id, ContentTypeApiId, Action, AllowedRoles, CreatedAt)`.
-* [`PermissionCheck`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L21): Request payload to verify access: `(ContentTypeApiId, Endpoint, Method, Action, UserRoles)`.
-* [`UserRecord`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L22-L32): Internal entity holding the BCrypt password hash and mutable role list.
-* [`MediaRecord`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L33): File metadata record: `(Id, Name, AlternativeText, Caption, Width, Height, Hash, Ext, Mime, Size, Url, Provider, Path)`. Note that `Path` is marked `[property: JsonIgnore]` so absolute server paths are never leaked over HTTP.
+#### Domain Models ([`src/ApiForge.Core/Models/`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Models))
+* [`UserRecord`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Models/UserRecord.cs): Internal entity holding the BCrypt password hash and mutable role list.
+* [`MediaRecord`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Models/MediaRecord.cs): File metadata record: `(Id, Name, AlternativeText, Caption, Width, Height, Hash, Ext, Mime, Size, Url, Provider, Path)`. Note that `Path` is marked `[property: JsonIgnore]` so absolute server paths are never leaked over HTTP.
 
-#### Store Interfaces
-* [`IUserStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L34-L42): `Find(identifier)`, `ById(id)`, `All()`, `Add(...)`, `SetRoles(id, roles)`, `Remove(id)`.
-* [`IContentTypeStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L65-L73): `All()`, `ById(id)`, `ByApiId(apiId)`, `Create(dto)`, `Update(id, dto)`, `Delete(id)`.
-* [`IContentStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L75-L83): `Create(apiId, values)`, `All(apiId)`, `Search(apiId, filters)`, `ById(apiId, id)`, `Update(apiId, id, values)`, `Delete(apiId, id)`.
-* [`IPermissionStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L43-L55): Full CRUD for both API permissions and Content permissions.
-* [`IMediaStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Contracts.cs#L56-L63): `Save(file)`, `All()`, `ById(id)`, `ByFile(filename)`, `Remove(id)`.
+#### Data Transfer Objects ([`src/ApiForge.Core/DTOs/`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/DTOs))
+* [`AuthDtos.cs`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/DTOs/AuthDtos.cs): Contains `AuthResponse`, `RegisterRequest`, `LoginRequest`, `RefreshRequest`, and `UserDto`.
+* [`ContentTypeDtos.cs`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/DTOs/ContentTypeDtos.cs): Contains `ContentTypeDto` and `FieldDto`.
+* [`PermissionDtos.cs`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/DTOs/PermissionDtos.cs): Contains `ApiPermissionDto`, `ContentPermissionDto`, and `PermissionCheck`.
+
+#### Store Interfaces ([`src/ApiForge.Core/Stores/`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores))
+* [`IUserStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores/IUserStore.cs): `Find(identifier)`, `ById(id)`, `All()`, `Add(...)`, `SetRoles(id, roles)`, `Remove(id)`.
+* [`IContentTypeStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores/IContentTypeStore.cs): `All()`, `ById(id)`, `ByApiId(apiId)`, `Create(dto)`, `Update(id, dto)`, `Delete(id)`.
+* [`IContentStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores/IContentStore.cs): `Create(apiId, values)`, `All(apiId)`, `Search(apiId, filters)`, `ById(apiId, id)`, `Update(apiId, id, values)`, `Delete(apiId, id)`.
+* [`IPermissionStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores/IPermissionStore.cs): Full CRUD for both API permissions and Content permissions.
+* [`IMediaStore`](file:///c:/Users/dhrubo/projects/apiforge-headless-cms-dotnet/src/ApiForge.Core/Stores/IMediaStore.cs): `Save(file)`, `All()`, `ById(id)`, `ByFile(filename)`, `Remove(id)`.
 
 ---
 
